@@ -1,0 +1,8 @@
+- Created user skill production-game-dev at /home/workdir/.grok/skills/production-game-dev/ [2026-08-27]
+- Skill role is lead programmer/debugger; ship complete game code with no stubs or placeholders [2026-08-27]
+- artifacts/Full Game.pdf defines wave-combat loop (GamePhase combat/upgrade/gameOver, WaveManager, endless scale 1.0+log(wave)*0.5, difficulty tiers, milestones, daily missions) [2026-08-27]
+- GitHub account pk89trh2ds-sudo; primary game repo pk89trh2ds-sudo/Neon-TD (Swift). Also NeonTD (Replit boilerplate), Circut-Clash (empty), Margin-Meter [2026-08-27]
+- Finished Neon-TD on branch finish-game and opened a PR into main [2026-08-27]
+- Implemented leftover spec ideas on finish-game: WaveManager, continue-run, tower rank/sell, rare overclock [2026-08-27]
+- GitHub repo pk89trh2ds-sudo/Neon-TD is private SwiftUI; tree currently only ContentView.swift + README [2026-08-27]
+- ContentView already surfaces menu, GameManager, PlayerProfile (highest wave, prestige, runs), EconomySystem, SkillTree, Modules inventory, Battle Pass, Settings, neon audio [2026-08-27]
