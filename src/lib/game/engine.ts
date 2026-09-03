@@ -12,6 +12,7 @@ import {
   claimMissionAdBonus,
   claimPass,
   claimPassAdBonus,
+  grantReward,
   claimShopAdBonus,
   clearRun,
   consumePull,
@@ -40,6 +41,8 @@ import {
 } from "./ciphers";
 import { CombatSimulation, SplitMix64, hashStr, waveComposition } from "./sim";
 import { submitDailyScore } from "./leaderboard-api";
+import { createIapCheckoutSession, getEntitlements } from "./entitlements-api";
+import { type IapProductKey } from "./iap-catalog";
 import { Renderer } from "./renderer";
 import { useGame } from "./store";
 import { buyWorkshop, IN_RUN, inRunCost } from "./workshop";
@@ -57,6 +60,8 @@ import {
   rangeBonus,
   bountyBonus,
   dayStamp,
+  passLevel,
+  PREMIUM_PASS_TRACK,
   rewardLabel,
   startingCore,
   startingScrap,
@@ -100,6 +105,9 @@ export class GameEngine {
    *  (score submitted) or the tab reloads (a v1 simplification: a daily
    *  challenge run isn't resumable across sessions like a normal run is). */
   dailyChallengeDay: string | null = null;
+  /** IAP keys owned by the signed-in player (empty when signed out/offline —
+   *  ads stay on, premium pass stays locked; never trust a client override). */
+  entitlements: Set<string> = new Set();
   eventLog = "Ready.";
   corePatchUsed = false;
   reviveAdUsed = false;
@@ -141,6 +149,14 @@ export class GameEngine {
       useGame.getState().patch({ profile: this.profile, bankScrap: this.profile.bankScrap });
       useGame.getState().toast("Cloud sync", "Progress restored from your account", "ok");
     })();
+    void this.refreshEntitlements();
+    if (typeof window !== "undefined" && window.location.search.includes("purchase=success")) {
+      // Stripe's webhook usually lands before this redirect completes, but
+      // isn't guaranteed to — one retry after a short delay covers the gap.
+      useGame.getState().toast("Purchase received", "Finalizing your purchase…", "ok");
+      window.history.replaceState(null, "", window.location.pathname);
+      setTimeout(() => void this.refreshEntitlements(), 2500);
+    }
     this.track("session_start", {
       highestWave: this.profile.highestWaveReached,
       prestigeLevel: this.profile.prestigeLevel,
@@ -340,7 +356,7 @@ export class GameEngine {
     useGame.getState().patch({ screen, hasSavedRun: false, phase: "menu", labOpen: false });
     this.syncHud();
     getAdAdapter().gameplayStop();
-    void getAdAdapter().commercialBreak();
+    this.maybeCommercialBreak();
   }
 
   cashOut() {
@@ -631,6 +647,76 @@ export class GameEngine {
     audio.play("claim");
     this.afterMeta(rewardLabel(r));
     this.track("battlepass_claim", { level, reward: r.type });
+  }
+
+  /** The "premium_pass_s1" IAP's parallel reward track — additive on top of
+   *  the free one above, never a replacement for it. */
+  claimPremiumPassLevel(level: number) {
+    if (!this.entitlements.has("premium_pass_s1")) {
+      audio.play("deny");
+      return;
+    }
+    const track = PREMIUM_PASS_TRACK.find((t) => t.level === level);
+    if (!track || passLevel(this.profile.battlePassXP) < level) {
+      audio.play("deny");
+      return;
+    }
+    if (this.profile.premiumPassClaimed.includes(level)) {
+      audio.play("deny");
+      return;
+    }
+    this.profile.premiumPassClaimed.push(level);
+    grantReward(this.profile, track.reward);
+    audio.play("claim");
+    this.afterMeta(rewardLabel(track.reward));
+    this.track("premium_pass_claim", { level, reward: track.reward.type });
+  }
+
+  /** Redirects to Stripe Checkout for the given product. */
+  async startCheckout(product: IapProductKey) {
+    try {
+      const { url } = await createIapCheckoutSession({ data: product });
+      this.track("iap_checkout_start", { product });
+      window.location.href = url;
+    } catch (err) {
+      audio.play("deny");
+      useGame
+        .getState()
+        .toast(
+          "Checkout unavailable",
+          err instanceof Error ? err.message : "Try again later",
+          "danger",
+        );
+    }
+  }
+
+  private async refreshEntitlements() {
+    try {
+      const keys = await getEntitlements();
+      this.entitlements = new Set(keys);
+      if (this.entitlements.has("starter_pack") && !this.profile.consumedStarterPack) {
+        this.profile.consumedStarterPack = true;
+        this.profile.bankScrap += 500;
+        this.profile.inventoryPulls += 2;
+        this.profile.pendingRareUpgrades += 1;
+        this.flushProfile();
+        useGame
+          .getState()
+          .toast("Starter Pack", "+500 scrap, 2 pulls, 1 rare token", "ok");
+      }
+      useGame.getState().patch({ entitlements: [...this.entitlements] });
+      this.syncHud();
+    } catch {
+      /* signed out, or offline — entitlements stay empty */
+    }
+  }
+
+  /** Interstitial ad break, skipped entirely for a "remove_ads" owner —
+   *  rewarded placements (showRewardedAd) are player-initiated and stay on
+   *  regardless, since players choose those for a bonus. */
+  private maybeCommercialBreak() {
+    if (this.entitlements.has("remove_ads")) return;
+    void getAdAdapter().commercialBreak();
   }
 
   doPrestige() {
@@ -943,7 +1029,7 @@ export class GameEngine {
     }
     this.track("wave_cleared", { wave: this.wave, difficulty: this.profile.difficulty });
     getAdAdapter().gameplayStop();
-    void getAdAdapter().commercialBreak();
+    this.maybeCommercialBreak();
   }
 
   private failRun() {
@@ -957,7 +1043,7 @@ export class GameEngine {
     this.persistRun();
     this.syncHud();
     getAdAdapter().gameplayStop();
-    void getAdAdapter().commercialBreak();
+    this.maybeCommercialBreak();
   }
 
   private checkMilestones() {

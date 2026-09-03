@@ -11,7 +11,8 @@ export type Screen =
   | "ops"
   | "workshop"
   | "forge"
-  | "daily";
+  | "daily"
+  | "premium";
 export type DifficultyTier = "normal" | "hard" | "nightmare" | "insane";
 export type EnemyKind = "bit" | "virus" | "tank" | "boss";
 export type TowerKind = "pulse" | "beam" | "nova" | "tesla";
@@ -208,6 +209,12 @@ export type PlayerProfile = {
   equippedModules: ModuleId[];
   battlePassXP: number;
   battlePassClaimed: number[];
+  /** Tiers claimed from PREMIUM_PASS_TRACK — separate from the free track's
+   *  battlePassClaimed so owning the entitlement never touches free progress. */
+  premiumPassClaimed: number[];
+  /** True once the one-time "starter_pack" IAP entitlement's bundle has been
+   *  granted — checked so a re-sync of entitlements never re-grants it. */
+  consumedStarterPack: boolean;
   isEndlessUnlocked: boolean;
   lastMissionResetDay: string;
   missions: DailyMission[];
@@ -441,6 +448,22 @@ export const PASS_TRACK: Array<{ level: number; reward: Reward }> = [
   { level: 30, reward: { type: "skillPoints", amount: 5 } },
 ];
 
+/** Same tiers as PASS_TRACK, unlocked by the "premium_pass_s1" IAP entitlement
+ *  instead of currency — an additive bonus track, never a shortcut past the
+ *  free one (buying it doesn't remove or replace anything free players get). */
+export const PREMIUM_PASS_TRACK: Array<{ level: number; reward: Reward }> = [
+  { level: 1, reward: { type: "currency", amount: 100 } },
+  { level: 3, reward: { type: "gachaPull" } },
+  { level: 5, reward: { type: "currency", amount: 240 } },
+  { level: 8, reward: { type: "rareUpgrade" } },
+  { level: 10, reward: { type: "currency", amount: 400 } },
+  { level: 12, reward: { type: "skillPoints", amount: 4 } },
+  { level: 15, reward: { type: "gachaPull" } },
+  { level: 20, reward: { type: "rareUpgrade" } },
+  { level: 25, reward: { type: "currency", amount: 800 } },
+  { level: 30, reward: { type: "skillPoints", amount: 10 } },
+];
+
 export function emptyMods(): CombatMods {
   return {
     damage: 0,
@@ -583,6 +606,8 @@ export function defaultProfile(): PlayerProfile {
     equippedModules: [],
     battlePassXP: 0,
     battlePassClaimed: [],
+    premiumPassClaimed: [],
+    consumedStarterPack: false,
     isEndlessUnlocked: true,
     lastMissionResetDay: "",
     missions: [],

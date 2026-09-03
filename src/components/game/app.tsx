@@ -21,6 +21,7 @@ import { bindEngine, GameEngine, getEngine } from "@/lib/game/engine";
 import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import { shopForDay } from "@/lib/game/meta";
 import { getDailyLeaderboard } from "@/lib/game/leaderboard-api";
+import { IAP_CATALOG, IAP_PRODUCT_KEYS } from "@/lib/game/iap-catalog";
 import { CHASSIS, CIPHERS, GLYPH, prefixCipher, recipeHint } from "@/lib/game/ciphers";
 import { IN_RUN, IN_RUN_IDS, WORKSHOP, inRunCost, workshopCost } from "@/lib/game/workshop";
 import { useGame } from "@/lib/game/store";
@@ -30,6 +31,7 @@ import {
   GLYPH_IDS,
   MODULE,
   PASS_TRACK,
+  PREMIUM_PASS_TRACK,
   SKILL,
   SKILL_IDS,
   TOWER,
@@ -145,6 +147,7 @@ function MenuLayer() {
         {screen === "settings" && <SettingsPane />}
         {screen === "ops" && <OpsPane />}
         {screen === "daily" && <DailyPane />}
+        {screen === "premium" && <PremiumPane />}
       </div>
     </div>
   );
@@ -303,6 +306,7 @@ function MenuHome() {
         <NavTile icon={<Cpu className="size-4" />} label="Modules" to="modules" />
         <NavTile icon={<Trophy className="size-4" />} label="Battle pass" to="pass" />
         <NavTile icon={<Trophy className="size-4" />} label="Daily challenge" to="daily" />
+        <NavTile icon={<Zap className="size-4" />} label="Premium" to="premium" />
         <NavTile icon={<ShoppingBag className="size-4" />} label="Shop" to="shop" />
         <NavTile icon={<ClipboardList className="size-4" />} label="Ops log" to="ops" />
         <NavTile icon={<Cog className="size-4" />} label="Settings" to="settings" />
@@ -558,6 +562,8 @@ function ModulesPane() {
 
 function PassPane() {
   const p = useGame((s) => s.profile);
+  const entitlements = useGame((s) => s.entitlements);
+  const hasPremium = entitlements.includes("premium_pass_s1");
   const lvl = passLevel(p.battlePassXP);
   return (
     <div className="flex flex-col gap-4 py-4">
@@ -572,22 +578,46 @@ function PassPane() {
           Watch ad: +40 XP
         </Btn>
       )}
+      {!hasPremium && (
+        <Btn onClick={() => useGame.getState().patch({ screen: "premium" })}>
+          Get the Premium Pass for a bonus track
+        </Btn>
+      )}
       {PASS_TRACK.map((t) => {
         const claimed = p.battlePassClaimed.includes(t.level);
+        const premiumTier = PREMIUM_PASS_TRACK.find((pt) => pt.level === t.level);
+        const premiumClaimed = p.premiumPassClaimed.includes(t.level);
         return (
-          <Panel key={t.level} className="flex items-center justify-between gap-3">
-            <div>
-              <div className="font-medium">Tier {t.level}</div>
-              <div className="text-xs text-muted">{rewardLabel(t.reward)}</div>
-            </div>
-            <Btn
-              variant="primary"
-              disabled={claimed || lvl < t.level}
-              onClick={() => getEngine()?.claimPassLevel(t.level)}
-            >
-              {claimed ? "Claimed" : "Claim"}
-            </Btn>
-          </Panel>
+          <div key={t.level} className="space-y-2">
+            <Panel className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Tier {t.level}</div>
+                <div className="text-xs text-muted">{rewardLabel(t.reward)}</div>
+              </div>
+              <Btn
+                variant="primary"
+                disabled={claimed || lvl < t.level}
+                onClick={() => getEngine()?.claimPassLevel(t.level)}
+              >
+                {claimed ? "Claimed" : "Claim"}
+              </Btn>
+            </Panel>
+            {premiumTier && hasPremium && (
+              <Panel className="flex items-center justify-between gap-3 border-cyan/30 bg-cyan/5">
+                <div>
+                  <div className="font-medium text-cyan">Premium bonus</div>
+                  <div className="text-xs text-muted">{rewardLabel(premiumTier.reward)}</div>
+                </div>
+                <Btn
+                  variant="primary"
+                  disabled={premiumClaimed || lvl < t.level}
+                  onClick={() => getEngine()?.claimPremiumPassLevel(t.level)}
+                >
+                  {premiumClaimed ? "Claimed" : "Claim"}
+                </Btn>
+              </Panel>
+            )}
+          </div>
         );
       })}
     </div>
@@ -681,6 +711,59 @@ function DailyPane() {
           </div>
         ))}
       </Panel>
+    </div>
+  );
+}
+
+function PremiumPane() {
+  const p = useGame((s) => s.profile);
+  const entitlements = useGame((s) => s.entitlements);
+  const [pending, setPending] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col gap-4 py-4">
+      <Back />
+      <h2 className="font-display text-3xl">Premium</h2>
+      <p className="text-sm text-muted">
+        Optional, one-time purchases. Nothing here sells power — no scrap, no
+        skill points, no shortcuts past the Workshop grind.
+      </p>
+      <SignedOut>
+        <Panel className="space-y-2">
+          <p className="text-sm text-muted">Sign in to make a purchase.</p>
+          <Btn onClick={() => (window.location.href = "/login")}>Sign in</Btn>
+        </Panel>
+      </SignedOut>
+      <SignedIn>
+        {IAP_PRODUCT_KEYS.map((key) => {
+          const item = IAP_CATALOG[key];
+          const owned = entitlements.includes(key);
+          return (
+            <Panel key={key} className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">{item.label}</div>
+                <div className="tabular text-cyan">{item.priceDisplay}</div>
+              </div>
+              <p className="text-xs text-muted">{item.blurb}</p>
+              <Btn
+                variant="primary"
+                className="w-full"
+                disabled={owned || pending === key}
+                onClick={() => {
+                  setPending(key);
+                  void getEngine()
+                    ?.startCheckout(key)
+                    .finally(() => setPending(null));
+                }}
+              >
+                {owned ? "Owned" : pending === key ? "Redirecting…" : "Buy"}
+              </Btn>
+            </Panel>
+          );
+        })}
+      </SignedIn>
+      <p className="text-xs text-faint">
+        Operator {p.displayName} · purchases sync to your account, not this device.
+      </p>
     </div>
   );
 }

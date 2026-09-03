@@ -228,6 +228,61 @@ function authApiPlugin(): Plugin {
   };
 }
 
+/**
+ * Mounts the Stripe webhook at `/api/stripe/webhook` during `npm run dev`.
+ * Reads the raw body as text (Stripe's signature check needs the exact bytes
+ * Stripe sent, before any JSON parsing) and hands it to the same handler the
+ * Nitro middleware uses.
+ */
+function stripeWebhookPlugin(): Plugin {
+  return {
+    name: "app-builder:stripe-webhook",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        try {
+          const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
+          if (pathOnly !== "/api/stripe/webhook") {
+            next();
+            return;
+          }
+          if ((req.method ?? "GET").toUpperCase() !== "POST") {
+            res.statusCode = 405;
+            res.setHeader("content-type", "text/plain; charset=utf-8");
+            res.end("Method Not Allowed");
+            return;
+          }
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(chunk as Buffer);
+          const rawBody = Buffer.concat(chunks).toString("utf8");
+          const signature = req.headers["stripe-signature"];
+
+          const mod = (await server.ssrLoadModule(
+            "/src/lib/game/stripe-webhook.server.ts",
+          )) as {
+            handleStripeWebhook: (body: string, sig: string | undefined) => Promise<Response>;
+          };
+          const response = await mod.handleStripeWebhook(
+            rawBody,
+            typeof signature === "string" ? signature : undefined,
+          );
+
+          res.statusCode = response.status;
+          response.headers.forEach((value, key) => res.setHeader(key, value));
+          res.end(Buffer.from(await response.arrayBuffer()));
+        } catch (err) {
+          console.error("[app-builder] /api/stripe/webhook handler failed:", err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("content-type", "text/plain; charset=utf-8");
+            res.end("stripe webhook failed");
+          }
+        }
+      });
+    },
+  };
+}
+
 // Portal builds (Poki/CrazyGames/itch.io) need a self-contained static zip —
 // no server function, since those platforms only host static files. Default
 // `build`/`preview` (Vercel SSR) are completely untouched; this only kicks in
@@ -256,6 +311,8 @@ export default defineConfig(({ command, isPreview }) => ({
     authPopupPlugin(),
     // Same reasoning for /api/auth/* — the Better Auth API mount.
     authApiPlugin(),
+    // Same reasoning for /api/stripe/webhook.
+    stripeWebhookPlugin(),
     // Dev-only /__app-env, read by scripts/check-auth-invariant.mjs.
     appEnvPlugin(),
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
