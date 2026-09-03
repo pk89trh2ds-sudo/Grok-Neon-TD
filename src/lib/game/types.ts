@@ -10,7 +10,8 @@ export type Screen =
   | "shop"
   | "ops"
   | "workshop"
-  | "forge";
+  | "forge"
+  | "daily";
 export type DifficultyTier = "normal" | "hard" | "nightmare" | "insane";
 export type EnemyKind = "bit" | "virus" | "tank" | "boss";
 export type TowerKind = "pulse" | "beam" | "nova" | "tesla";

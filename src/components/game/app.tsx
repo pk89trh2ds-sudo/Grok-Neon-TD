@@ -20,6 +20,7 @@ import {
 import { bindEngine, GameEngine, getEngine } from "@/lib/game/engine";
 import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import { shopForDay } from "@/lib/game/meta";
+import { getDailyLeaderboard } from "@/lib/game/leaderboard-api";
 import { CHASSIS, CIPHERS, GLYPH, prefixCipher, recipeHint } from "@/lib/game/ciphers";
 import { IN_RUN, IN_RUN_IDS, WORKSHOP, inRunCost, workshopCost } from "@/lib/game/workshop";
 import { useGame } from "@/lib/game/store";
@@ -143,6 +144,7 @@ function MenuLayer() {
         {screen === "shop" && <ShopPane />}
         {screen === "settings" && <SettingsPane />}
         {screen === "ops" && <OpsPane />}
+        {screen === "daily" && <DailyPane />}
       </div>
     </div>
   );
@@ -300,6 +302,7 @@ function MenuHome() {
         <NavTile icon={<Sparkles className="size-4" />} label="Skills" to="skills" />
         <NavTile icon={<Cpu className="size-4" />} label="Modules" to="modules" />
         <NavTile icon={<Trophy className="size-4" />} label="Battle pass" to="pass" />
+        <NavTile icon={<Trophy className="size-4" />} label="Daily challenge" to="daily" />
         <NavTile icon={<ShoppingBag className="size-4" />} label="Shop" to="shop" />
         <NavTile icon={<ClipboardList className="size-4" />} label="Ops log" to="ops" />
         <NavTile icon={<Cog className="size-4" />} label="Settings" to="settings" />
@@ -622,6 +625,62 @@ function ShopPane() {
           </Panel>
         );
       })}
+    </div>
+  );
+}
+
+function DailyPane() {
+  const p = useGame((s) => s.profile);
+  const [scores, setScores] = useState<Array<{ displayName: string; wave: number }> | null>(null);
+  const [error, setError] = useState(false);
+  const today = dayStamp();
+
+  useEffect(() => {
+    let cancelled = false;
+    getDailyLeaderboard({ data: today })
+      .then((rows) => {
+        if (!cancelled) setScores(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [today]);
+
+  return (
+    <div className="flex flex-col gap-4 py-4">
+      <Back />
+      <h2 className="font-display text-3xl">Daily challenge</h2>
+      <p className="text-sm text-muted">
+        Same circuit, same drops, for everyone today — Normal difficulty, your
+        permanent upgrades still apply. Resets {formatHMS(msUntilMidnight())}.
+      </p>
+      <Btn variant="primary" onClick={() => getEngine()?.startDailyChallenge()}>
+        <Play className="size-4" />
+        Play today's challenge
+      </Btn>
+      <Panel className="space-y-2">
+        <p className="text-xs uppercase tracking-[0.2em] text-muted">Today's leaderboard</p>
+        {error && <p className="text-sm text-muted">Sign in to see and post scores.</p>}
+        {!error && !scores && <p className="text-sm text-muted">Loading…</p>}
+        {!error && scores?.length === 0 && (
+          <p className="text-sm text-muted">No runs yet today — be the first.</p>
+        )}
+        {scores?.map((row, i) => (
+          <div
+            key={`${row.displayName}-${i}`}
+            className="flex items-center justify-between text-sm"
+          >
+            <span className="text-muted">
+              #{i + 1} {row.displayName}
+              {row.displayName === p.displayName ? " (you)" : ""}
+            </span>
+            <span className="tabular text-cyan">wave {row.wave}</span>
+          </div>
+        ))}
+      </Panel>
     </div>
   );
 }

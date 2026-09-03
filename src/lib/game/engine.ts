@@ -38,7 +38,8 @@ import {
   socketGlyph,
   unsocket,
 } from "./ciphers";
-import { CombatSimulation, SplitMix64, waveComposition } from "./sim";
+import { CombatSimulation, SplitMix64, hashStr, waveComposition } from "./sim";
+import { submitDailyScore } from "./leaderboard-api";
 import { Renderer } from "./renderer";
 import { useGame } from "./store";
 import { buyWorkshop, IN_RUN, inRunCost } from "./workshop";
@@ -95,6 +96,10 @@ export class GameEngine {
   rng = new SplitMix64(1);
   claimed = new Set<number>();
   endless = false;
+  /** Set while playing today's daily challenge — cleared once the run ends
+   *  (score submitted) or the tab reloads (a v1 simplification: a daily
+   *  challenge run isn't resumable across sessions like a normal run is). */
+  dailyChallengeDay: string | null = null;
   eventLog = "Ready.";
   corePatchUsed = false;
   reviveAdUsed = false;
@@ -208,11 +213,11 @@ export class GameEngine {
     this.pendingNotes = [];
   }
 
-  startGame(difficulty?: DifficultyTier) {
+  startGame(difficulty?: DifficultyTier, seedOverride?: number) {
     audio.unlock();
     this.profile.difficulty = difficulty ?? this.profile.difficulty;
     this.sim.resetRun();
-    this.seed = (Math.random() * 0xffffffff) >>> 0 || 1;
+    this.seed = seedOverride ?? ((Math.random() * 0xffffffff) >>> 0 || 1);
     this.rng = new SplitMix64(this.seed);
     this.wave = 1;
     this.maxCore = startingCore(this.profile);
@@ -253,6 +258,21 @@ export class GameEngine {
     getAdAdapter().gameplayStart();
     this.track("run_start", { difficulty: this.profile.difficulty });
     if (!this.profile.tutorialDone) this.track("tutorial_step", { step: 1 });
+  }
+
+  /**
+   * Today's shared seeded run: same seed for every player, so the same
+   * sequence of upgrade offers and drop rolls plays out for everyone — normal
+   * difficulty always, so "wave reached" is comparable regardless of a
+   * player's unlock progress. Permanent Workshop/skill/prestige bonuses still
+   * apply (this is "same circuit, same drops — see how far your build gets,"
+   * not a strictly fair esport reset), and the final wave is submitted to the
+   * daily leaderboard on death/cash-out.
+   */
+  startDailyChallenge() {
+    this.dailyChallengeDay = dayStamp();
+    this.startGame("normal", hashStr(`${this.dailyChallengeDay}:daily-v1`) || 1);
+    this.track("daily_challenge_start", { day: this.dailyChallengeDay });
   }
 
   continueRun() {
@@ -1040,6 +1060,16 @@ export class GameEngine {
     });
     const title = reason === "cashout" ? "Coins banked" : reason === "abort" ? "Run aborted" : "Core offline";
     useGame.getState().toast(title, `+${recap.banked} coins · wave ${this.wave}`, reason === "death" ? "danger" : "ok");
+    if (this.dailyChallengeDay) {
+      const day = this.dailyChallengeDay;
+      const wave = this.wave;
+      this.dailyChallengeDay = null;
+      submitDailyScore({ data: { day, wave, displayName: this.profile.displayName } })
+        .then(() => this.track("daily_challenge_submit", { day, wave }))
+        .catch(() => {
+          /* offline / server hiccup — the run still counted locally */
+        });
+    }
   }
 
   private makeRecap(reason: "death" | "cashout" | "abort"): RunRecap {
