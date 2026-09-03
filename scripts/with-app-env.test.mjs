@@ -59,8 +59,11 @@ test("an explicit process-env override wins over the file", () => {
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("the template ships auth off", () => {
-  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "false" });
+test("this app ships auth on", () => {
+  // Sign-in is on here (accounts / cross-device save / leaderboard) — the
+  // template's own off-by-default is covered by "keeps VITE_-prefixed
+  // string entries" above via a literal fixture, not this app's real file.
+  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "true" });
 });
 
 test("vite loadEnv resolves the wrapped value", () => {
@@ -80,16 +83,18 @@ test("the wrapped command runs with the app env applied", async () => {
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, "true");
 });
 
 test("the wrapped command sees an explicit override, not the file value", async () => {
+  // This app's file value is "true" (see above) — override with the other
+  // value so a regression to "the override is ignored" still fails loudly.
   const { stdout } = await execFileAsync(
     process.execPath,
     [WRAPPER, process.execPath, "-e", PRINT_FLAG],
-    { env: { ...process.env, VITE_AUTH_ENABLED: "true" } },
+    { env: { ...process.env, VITE_AUTH_ENABLED: "false" } },
   );
-  assert.equal(stdout, "true");
+  assert.equal(stdout, "false");
 });
 
 test("the wrapper propagates the command's exit code", async () => {
@@ -124,5 +129,5 @@ test("the CLI still runs when invoked through a symlinked path", async () => {
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, "true");
 });

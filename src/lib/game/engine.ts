@@ -1,6 +1,7 @@
 import { audio } from "./audio";
 import { track, type EventProps } from "../analytics";
 import { getAdAdapter, initAds, type AdResult } from "../ads/adapter";
+import { flushPushNow, schedulePush, syncOnSignIn } from "./cloud-sync";
 import {
   applyLogin,
   buyShop,
@@ -127,6 +128,14 @@ export class GameEngine {
       comeback: login.comeback,
       crateReady: login.crateReady,
     });
+    void (async () => {
+      const synced = await syncOnSignIn(this.profile);
+      if (synced === this.profile) return;
+      this.profile = synced;
+      saveProfile(this.profile);
+      useGame.getState().patch({ profile: this.profile, bankScrap: this.profile.bankScrap });
+      useGame.getState().toast("Cloud sync", "Progress restored from your account", "ok");
+    })();
     this.track("session_start", {
       highestWave: this.profile.highestWaveReached,
       prestigeLevel: this.profile.prestigeLevel,
@@ -162,6 +171,9 @@ export class GameEngine {
       this.flushProfile();
       if (this.phase === "combat" || this.phase === "upgrade") this.persistRun();
       this.track("session_end", { wave: this.wave, phase: this.phase });
+      // A backgrounded/closing tab may not survive schedulePush's debounce —
+      // flush immediately here so the last few minutes aren't lost.
+      void flushPushNow(this.profile);
     };
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) persist();
@@ -1082,6 +1094,7 @@ export class GameEngine {
   private flushProfile() {
     const unlocked = checkAchievements(this.profile);
     saveProfile(this.profile);
+    schedulePush(this.profile);
     for (const a of unlocked) {
       useGame.getState().toast(a.title, a.detail, "ok");
     }

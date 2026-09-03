@@ -56,9 +56,18 @@ test("non-.sql entries are dropped (readdir also yields the auth/ directory)", (
   assert.deepEqual(pendingMigrations(["auth", "README.md"], []), []);
 });
 
-test("the auth schema ships outside the globbed directory", () => {
+test("the auth schema is copied up now that sign-in is on", () => {
+  // Sign-in on (this app): "Turning sign-in on" copies migrations/auth/0001_auth.sql
+  // up to migrations/0001_auth.sql, so it IS in scope for the top-level glob —
+  // the auth/ subdirectory itself still stays out of scope (non-recursive read).
+  // Assert membership, not an exact list: this app's own migrations
+  // (0002_*.sql, ...) grow over time and aren't this test's concern.
   const migrationsDir = join(projectRoot(), "migrations");
-  assert.deepEqual(pendingMigrations(readdirSync(migrationsDir), []), []);
+  const pending = pendingMigrations(readdirSync(migrationsDir), []);
+  assert.ok(
+    pending.some((m) => m.name === AUTH_MIGRATION && m.path === AUTH_MIGRATION),
+    "expected 0001_auth.sql among the pending migrations",
+  );
   assert.ok(readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"));
 });
 

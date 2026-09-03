@@ -18,6 +18,7 @@ import {
   Zap,
 } from "lucide-react";
 import { bindEngine, GameEngine, getEngine } from "@/lib/game/engine";
+import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import { shopForDay } from "@/lib/game/meta";
 import { CHASSIS, CIPHERS, GLYPH, prefixCipher, recipeHint } from "@/lib/game/ciphers";
 import { IN_RUN, IN_RUN_IDS, WORKSHOP, inRunCost, workshopCost } from "@/lib/game/workshop";
@@ -708,6 +709,18 @@ function SettingsPane() {
         Prestige (+5 skill points)
       </Btn>
       <p className="text-xs text-faint">Unlocks after wave 50. Keeps skills, modules, workshop, and forge.</p>
+      <Panel className="space-y-3">
+        <p className="text-xs uppercase tracking-[0.2em] text-muted">Cloud sync</p>
+        <SignedOut>
+          <p className="text-sm text-muted">
+            Sign in to sync your save and streak across devices.
+          </p>
+          <Btn onClick={() => (window.location.href = "/login")}>Sign in</Btn>
+        </SignedOut>
+        <SignedIn>
+          <UserButton />
+        </SignedIn>
+      </Panel>
       <Panel className="space-y-3">
         <p className="text-xs uppercase tracking-[0.2em] text-muted">Operator save</p>
         <Btn onClick={() => getEngine()?.downloadSave()}>Download save file</Btn>
