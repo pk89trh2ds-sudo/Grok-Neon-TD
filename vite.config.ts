@@ -142,6 +142,13 @@ function authPopupPlugin(): Plugin {
   };
 }
 
+// Portal builds (Poki/CrazyGames/itch.io) need a self-contained static zip —
+// no server function, since those platforms only host static files. Default
+// `build`/`preview` (Vercel SSR) are completely untouched; this only kicks in
+// for the explicit `build:portal` script, keyed off npm's own lifecycle env
+// var so no new CLI flags/deps are needed.
+const isPortalBuild = process.env.npm_lifecycle_event === "build:portal";
+
 // `0.0.0.0:8080` is the live-preview contract — don't change host/port.
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
@@ -166,16 +173,25 @@ export default defineConfig(({ command, isPreview }) => ({
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
     grokPwaPlugin(),
     tailwindcss(),
-    tanstackStart(),
+    // Portal builds ship as a plain client SPA (a static shell + client JS,
+    // no server round-trip) — the default (non-portal) build keeps full SSR.
+    tanstackStart(isPortalBuild ? { spa: { enabled: true } } : {}),
     ...(command === "build" || isPreview
       ? [
-          nitro({
-            preset: "vercel",
-            // Auto-registers server/middleware/* (the PWA install page +
-            // manifest + head-tag middleware). Nitro v3 defaults serverDir to
-            // false, so removing this silently unwires /?install=1 on deploys.
-            serverDir: "./server",
-          }),
+          nitro(
+            isPortalBuild
+              ? // Prerenders every route to plain HTML/CSS/JS — no server
+                // function, no PWA install middleware (not needed inside a
+                // portal's own iframe/site).
+                { preset: "static" }
+              : {
+                  preset: "vercel",
+                  // Auto-registers server/middleware/* (the PWA install page +
+                  // manifest + head-tag middleware). Nitro v3 defaults serverDir to
+                  // false, so removing this silently unwires /?install=1 on deploys.
+                  serverDir: "./server",
+                },
+          ),
         ]
       : []),
     viteReact(),

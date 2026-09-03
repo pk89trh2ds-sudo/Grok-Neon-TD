@@ -3,3 +3,6 @@ node_modules/
 .github_repo
 .env
 .env.*
+# Portal build output (npm run build:portal) — generated on demand, zipped
+# for upload to Poki/CrazyGames/itch.io. Not deployed anywhere from git.
+.output/
