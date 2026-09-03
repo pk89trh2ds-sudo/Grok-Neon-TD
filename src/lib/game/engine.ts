@@ -1,11 +1,17 @@
 import { audio } from "./audio";
+import { track, type EventProps } from "../analytics";
+import { getAdAdapter, initAds, type AdResult } from "../ads/adapter";
 import {
   applyLogin,
   buyShop,
   checkAchievements,
   claimDailyCrate,
+  claimDailyCrateAdBonus,
   claimMission,
+  claimMissionAdBonus,
   claimPass,
+  claimPassAdBonus,
+  claimShopAdBonus,
   clearRun,
   consumePull,
   consumeRare,
@@ -48,6 +54,7 @@ import {
   fireRateBonus,
   rangeBonus,
   bountyBonus,
+  dayStamp,
   rewardLabel,
   startingCore,
   startingScrap,
@@ -89,6 +96,7 @@ export class GameEngine {
   endless = false;
   eventLog = "Ready.";
   corePatchUsed = false;
+  reviveAdUsed = false;
   inRun: Partial<Record<InRunId, number>> = {};
   runKills = 0;
   runGlyphs: GlyphId[] = [];
@@ -111,6 +119,7 @@ export class GameEngine {
   }
 
   async boot() {
+    void initAds();
     const login = applyLogin(this.profile);
     this.profile = login.profile;
     this.flushProfile();
@@ -118,6 +127,14 @@ export class GameEngine {
       comeback: login.comeback,
       crateReady: login.crateReady,
     });
+    this.track("session_start", {
+      highestWave: this.profile.highestWaveReached,
+      prestigeLevel: this.profile.prestigeLevel,
+      loginStreak: this.profile.loginStreak,
+    });
+    if (login.streakUp) {
+      this.track("daily_login", { streak: this.profile.loginStreak, comeback: login.comeback });
+    }
     if (login.comeback) {
       this.pendingNotes.push({
         title: "Operator returned",
@@ -144,6 +161,7 @@ export class GameEngine {
     const persist = () => {
       this.flushProfile();
       if (this.phase === "combat" || this.phase === "upgrade") this.persistRun();
+      this.track("session_end", { wave: this.wave, phase: this.phase });
     };
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) persist();
@@ -200,6 +218,7 @@ export class GameEngine {
     this.paused = false;
     this.speed = 1;
     this.corePatchUsed = false;
+    this.reviveAdUsed = false;
     this.selectedCoord = null;
     this.acc = 0;
     this.inRun = {};
@@ -219,6 +238,9 @@ export class GameEngine {
     });
     this.syncHud();
     audio.play("wave");
+    getAdAdapter().gameplayStart();
+    this.track("run_start", { difficulty: this.profile.difficulty });
+    if (!this.profile.tutorialDone) this.track("tutorial_step", { step: 1 });
   }
 
   continueRun() {
@@ -240,6 +262,7 @@ export class GameEngine {
     this.profile.difficulty = snap.difficulty;
     this.paused = false;
     this.corePatchUsed = snap.corePatchUsed;
+    this.reviveAdUsed = snap.reviveAdUsed ?? false;
     this.sim.resetRun();
     this.sim.runDamageBonus = snap.runDamageBonus;
     this.sim.runRangeBonus = snap.runRangeBonus;
@@ -268,6 +291,7 @@ export class GameEngine {
     useGame.getState().patch({ screen: "play" });
     this.syncHud();
     audio.play("ui");
+    if (this.phase === "combat") getAdAdapter().gameplayStart();
   }
 
   returnToMenu() {
@@ -283,6 +307,8 @@ export class GameEngine {
     this.labOpen = false;
     useGame.getState().patch({ screen, hasSavedRun: false, phase: "menu", labOpen: false });
     this.syncHud();
+    getAdAdapter().gameplayStop();
+    void getAdAdapter().commercialBreak();
   }
 
   cashOut() {
@@ -304,6 +330,8 @@ export class GameEngine {
     this.paused = !this.paused;
     this.syncHud();
     audio.play("ui");
+    if (this.paused) getAdAdapter().gameplayStop();
+    else getAdAdapter().gameplayStart();
   }
 
   setSpeed(s: 1 | 2 | 3) {
@@ -345,6 +373,7 @@ export class GameEngine {
     if (buyWorkshop(this.profile, id)) {
       audio.play("claim");
       this.afterMeta("Workshop rank up");
+      this.track("workshop_upgrade", { id });
     } else audio.play("deny");
   }
 
@@ -415,6 +444,7 @@ export class GameEngine {
     audio.play("place");
     if (this.profile.tutorialDone === false && this.wave === 1) {
       useGame.getState().patch({ tutorialStep: 2 });
+      this.track("tutorial_step", { step: 2 });
     }
     this.persistRun();
     this.flushProfile();
@@ -557,6 +587,7 @@ export class GameEngine {
     }
     audio.play("claim");
     this.afterMeta(rewardLabel(r));
+    this.track("mission_claim", { id, reward: r.type });
   }
 
   claimPassLevel(level: number) {
@@ -567,6 +598,7 @@ export class GameEngine {
     }
     audio.play("claim");
     this.afterMeta(rewardLabel(r));
+    this.track("battlepass_claim", { level, reward: r.type });
   }
 
   doPrestige() {
@@ -576,6 +608,7 @@ export class GameEngine {
     }
     audio.play("clear");
     this.afterMeta("Prestige +5 skill points");
+    this.track("prestige", { level: this.profile.prestigeLevel });
   }
 
   claimCrate() {
@@ -587,6 +620,7 @@ export class GameEngine {
     audio.play("claim");
     useGame.getState().patch({ crateReady: false });
     this.afterMeta(rewardLabel(r));
+    this.track("daily_crate_claim", { reward: r.type, streak: this.profile.loginStreak });
   }
 
   buy(item: ShopItem) {
@@ -596,12 +630,112 @@ export class GameEngine {
     }
     audio.play("claim");
     this.afterMeta(`Purchased ${item.title}`);
+    this.track("shop_purchase", { itemId: item.id, cost: item.cost });
+  }
+
+  // --- Rewarded-ad placements ---------------------------------------------
+  // Every placement amplifies a reward the player can already earn for
+  // free — never gates content behind an ad. Eligibility is checked before
+  // showing the ad so we never spend an impression on nothing to grant.
+
+  async watchReviveAd() {
+    if (this.phase !== "gameOver" || this.reviveAdUsed || this.coreHP > 0) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("revive");
+    if (result !== "granted") return;
+    this.reviveAdUsed = true;
+    this.coreHP = Math.max(this.coreHP, 8);
+    this.maxCore = Math.max(this.maxCore, this.coreHP);
+    this.phase = "combat";
+    this.sim.queueWave(waveComposition(this.wave));
+    this.eventLog = "Ad revive: core restored.";
+    audio.play("upgrade");
+    this.flushProfile();
+    this.persistRun();
+    this.syncHud();
+    getAdAdapter().gameplayStart();
+    this.track("ad_reward_granted", { placement: "revive", wave: this.wave });
+  }
+
+  async claimCrateBonusAd() {
+    const today = dayStamp();
+    if (this.profile.dailyCrateDay !== today || this.profile.dailyCrateAdBonusDay === today) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("crate_double");
+    if (result !== "granted") return;
+    const r = claimDailyCrateAdBonus(this.profile);
+    if (!r) return;
+    audio.play("claim");
+    this.afterMeta(`Bonus: ${rewardLabel(r)}`);
+    this.track("ad_reward_granted", { placement: "crate_double" });
+  }
+
+  async claimMissionBonusAd(id: string) {
+    const m = this.profile.missions.find((x) => x.id === id);
+    if (!m || !m.claimed || m.adBoosted) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd(`mission_double:${id}`);
+    if (result !== "granted") return;
+    const r = claimMissionAdBonus(this.profile, id);
+    if (!r) return;
+    audio.play("claim");
+    this.afterMeta(`Bonus: ${rewardLabel(r)}`);
+    this.track("ad_reward_granted", { placement: "mission_double" });
+  }
+
+  async claimPassBonusAd() {
+    const today = dayStamp();
+    if (this.profile.dailyPassAdBonusDay === today) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("pass_xp_bonus");
+    if (result !== "granted") return;
+    const amount = claimPassAdBonus(this.profile);
+    if (amount == null) return;
+    audio.play("claim");
+    this.afterMeta(`+${amount} pass XP`);
+    this.track("ad_reward_granted", { placement: "pass_xp_bonus" });
+  }
+
+  async claimShopBonusAd() {
+    const today = dayStamp();
+    if (this.profile.dailyShopAdBonusDay === today) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("shop_free_item");
+    if (result !== "granted") return;
+    const item = claimShopAdBonus(this.profile);
+    if (!item) return;
+    audio.play("claim");
+    this.afterMeta(`Free: ${item.title}`);
+    this.track("ad_reward_granted", { placement: "shop_free_item" });
+  }
+
+  private async showAd(placementId: string): Promise<AdResult> {
+    this.track("ad_requested", { placement: placementId });
+    const result = await getAdAdapter().showRewardedAd(placementId);
+    if (result !== "granted") {
+      audio.play("deny");
+      if (result === "unavailable") {
+        useGame.getState().toast("Ad unavailable", "Try again in a moment", "info");
+      }
+    }
+    return result;
   }
 
   finishTutorial() {
     this.profile.tutorialDone = true;
     this.flushProfile();
     useGame.getState().patch({ tutorialStep: 0, briefing: false, profile: this.profile });
+    this.track("tutorial_complete");
   }
 
   setSetting<K extends keyof PlayerProfile>(key: K, value: PlayerProfile[K]) {
@@ -771,7 +905,13 @@ export class GameEngine {
     this.flushProfile();
     this.persistRun();
     this.syncHud();
-    if (!this.profile.tutorialDone) useGame.getState().patch({ tutorialStep: 3 });
+    if (!this.profile.tutorialDone) {
+      useGame.getState().patch({ tutorialStep: 3 });
+      this.track("tutorial_step", { step: 3 });
+    }
+    this.track("wave_cleared", { wave: this.wave, difficulty: this.profile.difficulty });
+    getAdAdapter().gameplayStop();
+    void getAdAdapter().commercialBreak();
   }
 
   private failRun() {
@@ -784,6 +924,8 @@ export class GameEngine {
     this.flushProfile();
     this.persistRun();
     this.syncHud();
+    getAdAdapter().gameplayStop();
+    void getAdAdapter().commercialBreak();
   }
 
   private checkMilestones() {
@@ -797,6 +939,7 @@ export class GameEngine {
       } else if (m.reward.type === "rareUpgrade") this.profile.pendingRareUpgrades += 1;
       this.eventLog = `Milestone wave ${m.wave} claimed.`;
       useGame.getState().toast("Milestone", rewardLabel(m.reward), "ok");
+      this.track("milestone_claim", { wave: m.wave, reward: m.reward.type });
     }
   }
 
@@ -840,6 +983,7 @@ export class GameEngine {
       runFireRateBonus: this.sim.runFireRateBonus,
       runBountyBonus: this.sim.runBountyBonus,
       corePatchUsed: this.corePatchUsed,
+      reviveAdUsed: this.reviveAdUsed,
       inRun: { ...this.inRun },
       runKills: this.runKills,
     };
@@ -875,6 +1019,13 @@ export class GameEngine {
     this.profile.bankScrap += recap.banked;
     clearRun();
     this.flushProfile();
+    this.track("run_end", {
+      reason,
+      wave: this.wave,
+      difficulty: this.profile.difficulty,
+      kills: recap.kills,
+      bankedScrap: recap.banked,
+    });
     const title = reason === "cashout" ? "Coins banked" : reason === "abort" ? "Run aborted" : "Core offline";
     useGame.getState().toast(title, `+${recap.banked} coins · wave ${this.wave}`, reason === "death" ? "danger" : "ok");
   }
@@ -913,6 +1064,13 @@ export class GameEngine {
     this.profile.chassis.push(emptyChassis(kind));
     this.runChassisDrop = kind;
     useGame.getState().toast("Chassis recovered", kind, "ok");
+  }
+
+  /** Analytics, gated on the save-integrity flag (see meta.ts) — a
+   *  hand-edited save is excluded so its numbers don't skew the funnel. */
+  private track(event: string, props: EventProps = {}) {
+    if (this.profile.tamperFlag) return;
+    track(event, props);
   }
 
   private afterMeta(msg: string) {

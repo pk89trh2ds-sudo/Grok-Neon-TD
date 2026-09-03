@@ -256,7 +256,16 @@ function MenuHome() {
               </span>
             </div>
             <Bar value={m.progress} max={m.target} />
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              {m.claimed && !m.adBoosted && (
+                <Btn
+                  variant="quiet"
+                  className="min-h-9 px-3 text-xs"
+                  onClick={() => getEngine()?.claimMissionBonusAd(m.id)}
+                >
+                  Watch ad: double
+                </Btn>
+              )}
               <Btn
                 variant="quiet"
                 className="min-h-9 px-3 text-xs"
@@ -271,6 +280,11 @@ function MenuHome() {
         {crate && (
           <Btn variant="primary" onClick={() => getEngine()?.claimCrate()}>
             Claim daily crate
+          </Btn>
+        )}
+        {!crate && p.dailyCrateDay === dayStamp() && p.dailyCrateAdBonusDay !== dayStamp() && (
+          <Btn variant="quiet" onClick={() => getEngine()?.claimCrateBonusAd()}>
+            Watch ad: double crate
           </Btn>
         )}
       </Panel>
@@ -549,6 +563,11 @@ function PassPane() {
         Level {lvl} · {p.battlePassXP} XP
       </p>
       <Bar value={p.battlePassXP % 100} max={100} />
+      {p.dailyPassAdBonusDay !== dayStamp() && (
+        <Btn variant="quiet" onClick={() => getEngine()?.claimPassBonusAd()}>
+          Watch ad: +40 XP
+        </Btn>
+      )}
       {PASS_TRACK.map((t) => {
         const claimed = p.battlePassClaimed.includes(t.level);
         return (
@@ -579,6 +598,11 @@ function ShopPane() {
       <Back />
       <h2 className="font-display text-3xl">Night market</h2>
       <p className="text-sm text-muted">Bank {p.bankScrap} · Rotates at midnight</p>
+      {p.dailyShopAdBonusDay !== dayStamp() && (
+        <Btn variant="quiet" onClick={() => getEngine()?.claimShopBonusAd()}>
+          Watch ad: free item
+        </Btn>
+      )}
       {items.map((item) => {
         const bought = p.dailyShopBought.includes(item.id);
         return (
@@ -971,6 +995,7 @@ function GameOverCard() {
   const recap = p.lastRecap;
   const engine = getEngine();
   const canPatch = engine ? !engine.corePatchUsed && core <= 0 && (p.bankScrap >= 80 || useGame.getState().scrap >= 80) : false;
+  const canRevive = engine ? !engine.reviveAdUsed && core <= 0 : false;
   return (
     <CenterCard>
       <h2 className={cn("font-display text-3xl", core > 0 ? "text-cyan" : "text-signal")}>
@@ -997,6 +1022,11 @@ function GameOverCard() {
             <div className="text-xs text-muted">Glyphs {recap.glyphs.map((g) => g.toUpperCase()).join(" · ")}</div>
           )}
         </Panel>
+      )}
+      {canRevive && (
+        <Btn variant="primary" onClick={() => getEngine()?.watchReviveAd()}>
+          Watch ad to continue
+        </Btn>
       )}
       {canPatch && (
         <Btn onClick={() => getEngine()?.corePatch()}>Emergency patch (80 scrap)</Btn>

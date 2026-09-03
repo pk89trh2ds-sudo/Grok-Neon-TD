@@ -133,6 +133,9 @@ export type DailyMission = {
   progress: number;
   reward: Reward;
   claimed: boolean;
+  /** True once the player watched a rewarded ad to double this mission's
+   *  reward. Resets naturally with the daily mission refresh. */
+  adBoosted: boolean;
 };
 
 export type ShopItem = {
@@ -220,6 +223,10 @@ export type PlayerProfile = {
   dailyCrateDay: string;
   dailyShopBought: string[];
   dailyShopDay: string;
+  /** Rewarded-ad bonus placements, each capped to once per calendar day. */
+  dailyCrateAdBonusDay: string;
+  dailyShopAdBonusDay: string;
+  dailyPassAdBonusDay: string;
   nextRunCoreBonus: number;
   nextRunDamageBonus: number;
   reducedMotion: boolean;
@@ -235,6 +242,10 @@ export type PlayerProfile = {
   discoveredCiphers: CipherId[];
   lastRecap: RunRecap | null;
   highestByDifficulty: Partial<Record<DifficultyTier, number>>;
+  /** Set when a loaded/imported save's economy fields don't match its
+   *  checksum (see meta.ts) — e.g. hand-edited JSON. Excluded from
+   *  analytics and, later, from leaderboards/IAP-adjacent logic. */
+  tamperFlag: boolean;
 };
 
 export type RunSnapshot = {
@@ -253,6 +264,7 @@ export type RunSnapshot = {
   runFireRateBonus: number;
   runBountyBonus: number;
   corePatchUsed: boolean;
+  reviveAdUsed: boolean;
   inRun: Partial<Record<InRunId, number>>;
   runKills: number;
 };
@@ -586,6 +598,9 @@ export function defaultProfile(): PlayerProfile {
     dailyCrateDay: "",
     dailyShopBought: [],
     dailyShopDay: "",
+    dailyCrateAdBonusDay: "",
+    dailyShopAdBonusDay: "",
+    dailyPassAdBonusDay: "",
     nextRunCoreBonus: 0,
     nextRunDamageBonus: 0,
     reducedMotion: false,
@@ -601,5 +616,6 @@ export function defaultProfile(): PlayerProfile {
     discoveredCiphers: [],
     lastRecap: null,
     highestByDifficulty: {},
+    tamperFlag: false,
   };
 }

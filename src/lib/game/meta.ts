@@ -35,14 +35,61 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
+// --- Save-integrity guard -------------------------------------------------
+// Saves are plain exportable/importable JSON (see exportProfileJson below),
+// which is a legitimate backup feature but also means anyone can hand-edit
+// the file to forge currency, ranks, or pulls. This isn't cryptographic
+// security (there's no secret a client-side game can actually keep), just a
+// tamper *detector*: a keyed hash over the economically meaningful fields,
+// checked on load/import. A mismatch flags the profile rather than
+// rejecting it, so a legitimate player is never locked out of their own
+// save — the flag is what excludes a profile from analytics and, later,
+// from leaderboards or anything IAP-adjacent.
+const INTEGRITY_SALT = "neontd-v3-guard";
+
+function integritySummary(p: PlayerProfile): string {
+  return [
+    p.bankScrap,
+    p.inventoryPulls,
+    p.pendingRareUpgrades,
+    p.skillPoints,
+    p.prestigeLevel,
+    p.highestWaveReached,
+    p.loginStreak,
+    p.totalRunsCompleted,
+    p.lifetimeKills,
+    JSON.stringify(p.skillRanks ?? {}),
+    JSON.stringify(p.workshop ?? {}),
+    JSON.stringify(p.glyphs ?? {}),
+    (p.chassis ?? []).length,
+    (p.discoveredCiphers ?? []).length,
+    (p.ownedModules ?? []).length,
+    p.battlePassXP,
+    JSON.stringify(p.battlePassClaimed ?? []),
+    JSON.stringify(p.achievementsClaimed ?? []),
+  ].join("|");
+}
+
+function computeChecksum(p: PlayerProfile): string {
+  return hashStr(INTEGRITY_SALT + integritySummary(p)).toString(36);
+}
+
+type Persisted = PlayerProfile & { checksum?: string };
+
+function verifyChecksum(data: Persisted): boolean {
+  if (!data.checksum) return false; // legacy save predating this guard — not tamper, just unverifiable
+  return data.checksum === computeChecksum(data);
+}
+
 export function loadProfile(): PlayerProfile {
   if (typeof localStorage === "undefined") return defaultProfile();
   try {
     const data =
-      safeParse<PlayerProfile>(localStorage.getItem(SAVE_KEY)) ??
-      safeParse<PlayerProfile>(localStorage.getItem(SAVE_KEY_LEGACY));
+      safeParse<Persisted>(localStorage.getItem(SAVE_KEY)) ??
+      safeParse<Persisted>(localStorage.getItem(SAVE_KEY_LEGACY));
     const base = defaultProfile();
     if (!data) return base;
+    const tamperFlag = !!data.checksum && !verifyChecksum(data);
     const merged: PlayerProfile = {
       ...base,
       ...data,
@@ -60,6 +107,7 @@ export function loadProfile(): PlayerProfile {
       dailyShopBought: data.dailyShopBought ?? [],
       highestByDifficulty: { ...base.highestByDifficulty, ...(data.highestByDifficulty ?? {}) },
       isEndlessUnlocked: true,
+      tamperFlag,
     };
     if (!merged.equippedChassisId && merged.chassis[0]) {
       merged.equippedChassisId = merged.chassis[0].id;
@@ -73,22 +121,25 @@ export function loadProfile(): PlayerProfile {
 export function saveProfile(p: PlayerProfile) {
   if (typeof localStorage === "undefined") return;
   try {
+    const withChecksum: Persisted = { ...p, checksum: computeChecksum(p) };
     const prev = localStorage.getItem(SAVE_KEY);
     if (prev) localStorage.setItem(SAVE_KEY + ".bak", prev);
-    localStorage.setItem(SAVE_KEY, JSON.stringify(p));
+    localStorage.setItem(SAVE_KEY, JSON.stringify(withChecksum));
   } catch {
     /* quota / private mode */
   }
 }
 
 export function exportProfileJson(p: PlayerProfile): string {
-  return JSON.stringify({ ...p, exportedAt: Date.now() }, null, 2);
+  const withChecksum: Persisted = { ...p, checksum: computeChecksum(p) };
+  return JSON.stringify({ ...withChecksum, exportedAt: Date.now() }, null, 2);
 }
 
 export function importProfileJson(raw: string): PlayerProfile | null {
-  const data = safeParse<PlayerProfile>(raw);
+  const data = safeParse<Persisted>(raw);
   if (!data || typeof data !== "object") return null;
   const base = defaultProfile();
+  const tamperFlag = !!data.checksum && !verifyChecksum(data);
   return {
     ...base,
     ...data,
@@ -98,6 +149,7 @@ export function importProfileJson(raw: string): PlayerProfile | null {
     chassis: Array.isArray(data.chassis) ? data.chassis : base.chassis,
     discoveredCiphers: data.discoveredCiphers ?? [],
     highestByDifficulty: { ...base.highestByDifficulty, ...(data.highestByDifficulty ?? {}) },
+    tamperFlag,
   };
 }
 
@@ -171,6 +223,7 @@ export function dailyMissions(): DailyMission[] {
       progress: 0,
       reward: { type: "currency", amount: 80 },
       claimed: false,
+      adBoosted: false,
     },
     {
       id: "clear-3",
@@ -179,6 +232,7 @@ export function dailyMissions(): DailyMission[] {
       progress: 0,
       reward: { type: "battlePassXP", amount: 40 },
       claimed: false,
+      adBoosted: false,
     },
     {
       id: "place-4",
@@ -187,6 +241,7 @@ export function dailyMissions(): DailyMission[] {
       progress: 0,
       reward: { type: "gachaPull" },
       claimed: false,
+      adBoosted: false,
     },
   ];
 }
@@ -210,6 +265,15 @@ export function claimMission(p: PlayerProfile, id: string): Reward | null {
   const m = p.missions.find((x) => x.id === id);
   if (!m || m.claimed || m.progress < m.target) return null;
   m.claimed = true;
+  grantReward(p, m.reward);
+  return m.reward;
+}
+
+/** Rewarded-ad bonus: doubles an already-claimed mission's reward, once. */
+export function claimMissionAdBonus(p: PlayerProfile, id: string): Reward | null {
+  const m = p.missions.find((x) => x.id === id);
+  if (!m || !m.claimed || m.adBoosted) return null;
+  m.adBoosted = true;
   grantReward(p, m.reward);
   return m.reward;
 }
@@ -336,6 +400,30 @@ export function claimDailyCrate(p: PlayerProfile): Reward | null {
   return reward;
 }
 
+/** Rewarded-ad bonus: grants a second copy of today's crate reward, once. */
+export function claimDailyCrateAdBonus(p: PlayerProfile): Reward | null {
+  const today = dayStamp();
+  if (p.dailyCrateDay !== today) return null; // must claim the base crate first
+  if (p.dailyCrateAdBonusDay === today) return null;
+  p.dailyCrateAdBonusDay = today;
+  const reward: Reward =
+    p.loginStreak >= 7
+      ? { type: "gachaPull" }
+      : { type: "currency", amount: 25 + p.loginStreak * 5 };
+  grantReward(p, reward);
+  return reward;
+}
+
+/** Rewarded-ad bonus: a flat battle-pass XP top-up, once per day. */
+export function claimPassAdBonus(p: PlayerProfile): number | null {
+  const today = dayStamp();
+  if (p.dailyPassAdBonusDay === today) return null;
+  p.dailyPassAdBonusDay = today;
+  const amount = 40;
+  p.battlePassXP += amount;
+  return amount;
+}
+
 export function shopForDay(day: string): ShopItem[] {
   const rng = new SplitMix64(hashStr(day + ":shop"));
   const catalog: ShopItem[] = [
@@ -391,11 +479,7 @@ export function shopForDay(day: string): ShopItem[] {
   return out;
 }
 
-export function buyShop(p: PlayerProfile, item: ShopItem): boolean {
-  if (p.dailyShopBought.includes(item.id)) return false;
-  if (p.bankScrap < item.cost) return false;
-  p.bankScrap -= item.cost;
-  p.dailyShopBought.push(item.id);
+function applyShopEffect(p: PlayerProfile, item: ShopItem) {
   switch (item.kind) {
     case "pull":
       p.inventoryPulls += 1;
@@ -418,7 +502,26 @@ export function buyShop(p: PlayerProfile, item: ShopItem): boolean {
       break;
     }
   }
+}
+
+export function buyShop(p: PlayerProfile, item: ShopItem): boolean {
+  if (p.dailyShopBought.includes(item.id)) return false;
+  if (p.bankScrap < item.cost) return false;
+  p.bankScrap -= item.cost;
+  p.dailyShopBought.push(item.id);
+  applyShopEffect(p, item);
   return true;
+}
+
+/** Rewarded-ad bonus: grants today's first shop item for free, once. */
+export function claimShopAdBonus(p: PlayerProfile): ShopItem | null {
+  const today = dayStamp();
+  if (p.dailyShopAdBonusDay === today) return null;
+  const item = shopForDay(today)[0];
+  if (!item) return null;
+  p.dailyShopAdBonusDay = today;
+  applyShopEffect(p, item);
+  return item;
 }
 
 export function buyPermanent(p: PlayerProfile, id: WorkshopId): boolean {
