@@ -18,17 +18,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-### This is a Grok-Build-scaffolded app — some constraints are load-bearing, not stylistic
+### Core tech stack
 
-This repo was scaffolded by "Grok Build" (see `AGENTS.md` for the full sandbox
-contract). Several pieces exist to satisfy that platform and must not be
-removed or worked around even though they look unrelated to the game:
-- `server/middleware/grok-pwa.ts` + `scripts/grok-pwa-plugin.mjs` — PWA install
-  page, manifest, and the "Created with Grok" branding injector.
-- `<PreviewHostBridge />` in `src/routes/__root.tsx` — live-preview control channel; a no-op outside the Grok preview.
-- `public/__grok/`, `.grok/` — platform chrome/config, not app content.
-- `startup.sh` — the sandbox's revive contract; not used in this deployment path (Vercel) but kept in sync regardless.
-- Auth/DB are opt-in per `.grok/app-env.json` (currently **ON** — `VITE_AUTH_ENABLED: "true"`, `deploy.database: true` — this app turned on the pre-wired-but-disabled backend for cloud save/leaderboards/entitlements).
+This is a **standalone, revenue-ready game** built with:
+- **React 19 + TanStack Start/Router** for the UI framework
+- **Zustand** for state management (`useGame`)
+- **Canvas2D** hand-rolled renderer (no external graphics lib)
+- **Vite 8 + Nitro v3 beta** for dual build targets (Vercel SSR + static portal SPA)
+- **Better Auth** with email/password auth (Google/X federate through Grok's broker, unavailable standalone)
+- **Supabase Postgres** for cloud saves, daily leaderboards, and entitlements
+- **Stripe** for in-app purchase handling (Checkout Sessions)
+- **Portal SDKs** for Poki/CrazyGames monetization (portal detection via referrer/ancestorOrigins)
+
+### Config & deployment
+
+- `.grok/app-env.json` — dev environment config (auth/db feature flags, currently **ON**)
+- `vite.config.ts` — two build targets: default (Vercel SSR) and `npm run build:portal` (static SPA for zipping)
+- `server/middleware/*.ts` — Nitro endpoints (auth API, Stripe webhook, etc.)
+- `migrations/*.sql` — Postgres schema for auth, profiles, leaderboards, entitlements
+
+### Build outputs
+
+After initial Grok scaffolding, the following are safe to remove or repurpose:
+- `server/middleware/grok-pwa.ts`, `scripts/grok-pwa-plugin.mjs` — Grok PWA + branding (can be deleted)
+- `<PreviewHostBridge />` in `src/routes/__root.tsx` — Grok live-preview (can be removed)
+- `public/__grok/`, `.grok/grok-branding/` — Grok assets (can be deleted; keep `.grok/app-env.json` for dev config)
+- `startup.sh`, `AGENTS.md`, `AGENTS.project.md` — Grok scaffold contracts (not needed for Vercel deployment)
 
 ### Dual-wiring: every raw HTTP route needs a dev-server twin
 
