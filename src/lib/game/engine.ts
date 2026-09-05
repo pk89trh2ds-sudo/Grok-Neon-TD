@@ -342,11 +342,14 @@ export class GameEngine {
     this.sim.restoreTowers(snap.towers ?? []);
     this.refreshMods();
     if (snap.phase === "upgrade") {
+      // Saved mid-upgrade: restore offers and auto-start next wave (no upgrade screen pause)
       this.offers = this.sim.makeOffers(this.wave, this.rng);
       if (this.profile.pendingRareUpgrades > 0) {
         this.offers.unshift(this.sim.injectRareOffer(this.wave));
       }
-      this.phase = "upgrade";
+      this.wave += 1;
+      this.phase = "combat";
+      this.beginWave();
     } else {
       this.offers = [];
       this.phase = "combat";
@@ -377,7 +380,7 @@ export class GameEngine {
   }
 
   cashOut() {
-    if (this.phase !== "upgrade") return;
+    if (this.phase !== "combat" && this.phase !== "upgrade") return;
     this.settleRun("cashout");
     this.phase = "gameOver";
     this.eventLog = `Banked at wave ${this.wave}.`;
@@ -551,7 +554,7 @@ export class GameEngine {
   }
 
   buyOffer(offer: UpgradeOffer) {
-    if (this.phase !== "upgrade") return;
+    if (this.phase !== "combat" && this.phase !== "upgrade") return;
     if (offer.cost > 0 && this.scrap < offer.cost) {
       this.eventLog = "Not enough scrap.";
       audio.play("deny");
@@ -576,7 +579,7 @@ export class GameEngine {
   }
 
   startNextWave() {
-    if (this.phase !== "upgrade") return;
+    if (this.phase !== "upgrade" && this.phase !== "combat") return;
     this.wave += 1;
     this.offers = [];
     this.phase = "combat";
@@ -1022,23 +1025,26 @@ export class GameEngine {
 
   private endWave() {
     if (this.phase !== "combat") return;
+    const clearedWave = this.wave;
     progressMission(this.profile, "Clear", 1);
     this.checkMilestones();
     this.endless = true;
     this.profile.isEndlessUnlocked = true;
     this.maybeDropChassis();
-    this.rng = new SplitMix64(this.seed + this.wave * 997);
-    this.offers = this.sim.makeOffers(this.wave, this.rng);
+    this.rng = new SplitMix64(this.seed + clearedWave * 997);
+    this.offers = this.sim.makeOffers(clearedWave, this.rng);
     if (this.profile.pendingRareUpgrades > 0) {
-      this.offers.unshift(this.sim.injectRareOffer(this.wave));
+      this.offers.unshift(this.sim.injectRareOffer(clearedWave));
     }
-    this.noteWave(this.wave);
-    this.profile.skillPoints += Math.max(1, Math.floor(this.wave / 5));
-    this.profile.battlePassXP += this.wave * 8;
-    this.phase = "upgrade";
-    this.eventLog = `Wave ${this.wave} cleared. Lane holds.`;
+    this.noteWave(clearedWave);
+    this.profile.skillPoints += Math.max(1, Math.floor(clearedWave / 5));
+    this.profile.battlePassXP += clearedWave * 8;
+    // No upgrade-screen pause — next wave starts immediately, offers float over HUD
+    this.wave += 1;
+    this.eventLog = `Wave ${clearedWave} cleared. Wave ${this.wave} incoming.`;
     audio.play("clear");
     this.renderer.addTrauma(0.2);
+    this.beginWave();
     this.flushProfile();
     this.persistRun();
     this.syncHud();
@@ -1046,8 +1052,7 @@ export class GameEngine {
       useGame.getState().patch({ tutorialStep: 3 });
       this.track("tutorial_step", { step: 3 });
     }
-    this.track("wave_cleared", { wave: this.wave, difficulty: this.profile.difficulty });
-    getAdAdapter().gameplayStop();
+    this.track("wave_cleared", { wave: clearedWave, difficulty: this.profile.difficulty });
     this.maybeCommercialBreak();
   }
 

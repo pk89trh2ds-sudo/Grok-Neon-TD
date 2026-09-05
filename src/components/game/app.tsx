@@ -1071,7 +1071,7 @@ function PlayHud() {
           <div className="pointer-events-auto max-w-sm rounded-lg border border-line hud-panel px-4 py-3 text-sm">
             {tutorial === 1 && "Tap a dark tile beside the circuit to deploy Pulse."}
             {tutorial === 2 && "Hostiles leak into the vault if they finish the lane. Keep fire on the front."}
-            {tutorial === 3 && "Wave clear. Install an upgrade, then launch the next wave."}
+            {tutorial === 3 && "Wave clear. Upgrades appear on the right — tap to install while fighting."}
             <div className="mt-2 flex justify-end">
               <Btn variant="quiet" className="min-h-9" onClick={() => getEngine()?.finishTutorial()}>
                 Dismiss
@@ -1091,7 +1091,7 @@ function PlayHud() {
         </CenterCard>
       )}
 
-      {phase === "upgrade" && <UpgradeCard />}
+      {phase === "combat" && <UpgradePanel />}
       {phase === "gameOver" && <GameOverCard />}
     </>
   );
@@ -1107,39 +1107,36 @@ function CenterCard({ children }: { children: ReactNode }) {
   );
 }
 
-function UpgradeCard() {
-  const wave = useGame((s) => s.wave);
+function UpgradePanel() {
   const scrap = useGame((s) => s.scrap);
-  const core = useGame((s) => s.coreHP);
   const offers = useGame((s) => s.offers);
+  if (offers.length === 0) return null;
   return (
-    <CenterCard>
-      <h2 className="font-display text-2xl tracking-wide text-cyan">Wave {wave} cleared</h2>
-      <p className="text-sm text-muted">
-        Scrap {scrap} · Core {core}
-      </p>
-      {offers.map((o) => (
+    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center p-2 pb-24 pt-16">
+      <div className="pointer-events-auto flex w-44 flex-col gap-1.5 overflow-y-auto">
+        <div className="px-1 font-mono text-[10px] uppercase tracking-widest text-cyan">Upgrades</div>
+        {offers.map((o) => (
+          <button
+            key={o.id}
+            disabled={o.cost > 0 && scrap < o.cost}
+            onClick={() => getEngine()?.buyOffer(o)}
+            className="rounded-lg border border-line bg-panel/90 p-2 text-left backdrop-blur-sm disabled:opacity-40"
+          >
+            <div className="flex items-start justify-between gap-1">
+              <span className="text-xs font-medium leading-tight">{o.title}</span>
+              <span className="shrink-0 font-mono text-[10px] text-cyan">{o.cost === 0 ? "FREE" : o.cost}</span>
+            </div>
+            <div className="mt-0.5 text-[10px] leading-tight text-muted">{o.detail}</div>
+          </button>
+        ))}
         <button
-          key={o.id}
-          disabled={o.cost > 0 && scrap < o.cost}
-          onClick={() => getEngine()?.buyOffer(o)}
-          className="rounded-lg border border-line bg-panel-2 p-3 text-left disabled:opacity-40"
+          onClick={() => getEngine()?.cashOut()}
+          className="rounded-lg border border-line bg-panel/90 px-2 py-1.5 text-left text-[10px] text-muted backdrop-blur-sm"
         >
-          <div className="flex items-center justify-between">
-            <span className="font-medium">{o.title}</span>
-            <span className="font-mono text-sm text-cyan">{o.cost === 0 ? "FREE" : o.cost}</span>
-          </div>
-          <div className="text-xs text-muted">{o.detail}</div>
+          Bank &amp; end run
         </button>
-      ))}
-      <Btn variant="primary" onClick={() => getEngine()?.startNextWave()}>
-        Next wave
-      </Btn>
-      <Btn onClick={() => getEngine()?.cashOut()}>Bank coins to Workshop</Btn>
-      <Btn variant="quiet" onClick={() => getEngine()?.returnToMenu()}>
-        Abort (half coins)
-      </Btn>
-    </CenterCard>
+      </div>
+    </div>
   );
 }
 
