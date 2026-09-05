@@ -1013,6 +1013,7 @@ export class GameEngine {
   private beginWave() {
     this.sim.resetCombatants();
     this.sim.queueWave(waveComposition(this.wave));
+    this.sim.spawnCooldown = 0; // first enemy of new wave spawns immediately — no visible gap
     const income = (this.inRun.income ?? 0) * IN_RUN.income.step;
     if (income) this.scrap += income;
     if (this.mods.corePerWave > 0) {
