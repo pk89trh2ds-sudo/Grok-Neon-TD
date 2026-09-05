@@ -1,11 +1,19 @@
 import { audio } from "./audio";
+import { track, type EventProps } from "../analytics";
+import { detectPortal, getAdAdapter, initAds, type AdResult } from "../ads/adapter";
+import { flushPushNow, schedulePush, syncOnSignIn } from "./cloud-sync";
 import {
   applyLogin,
   buyShop,
   checkAchievements,
   claimDailyCrate,
+  claimDailyCrateAdBonus,
   claimMission,
+  claimMissionAdBonus,
   claimPass,
+  claimPassAdBonus,
+  grantReward,
+  claimShopAdBonus,
   clearRun,
   consumePull,
   consumeRare,
@@ -31,7 +39,10 @@ import {
   socketGlyph,
   unsocket,
 } from "./ciphers";
-import { CombatSimulation, SplitMix64, waveComposition } from "./sim";
+import { CombatSimulation, SplitMix64, hashStr, waveComposition } from "./sim";
+import { submitDailyScore } from "./leaderboard-api";
+import { createIapCheckoutSession, getEntitlements } from "./entitlements-api";
+import { type IapProductKey } from "./iap-catalog";
 import { Renderer } from "./renderer";
 import { useGame } from "./store";
 import { buyWorkshop, IN_RUN, inRunCost } from "./workshop";
@@ -48,6 +59,9 @@ import {
   fireRateBonus,
   rangeBonus,
   bountyBonus,
+  dayStamp,
+  passLevel,
+  PREMIUM_PASS_TRACK,
   rewardLabel,
   startingCore,
   startingScrap,
@@ -87,14 +101,36 @@ export class GameEngine {
   rng = new SplitMix64(1);
   claimed = new Set<number>();
   endless = false;
+  /** Set while playing today's daily challenge — cleared once the run ends
+   *  (score submitted) or the tab reloads (a v1 simplification: a daily
+   *  challenge run isn't resumable across sessions like a normal run is). */
+  dailyChallengeDay: string | null = null;
+  /** IAP keys owned by the signed-in player (empty when signed out/offline —
+   *  ads stay on, premium pass stays locked; never trust a client override). */
+  entitlements: Set<string> = new Set();
   eventLog = "Ready.";
   corePatchUsed = false;
+  reviveAdUsed = false;
   inRun: Partial<Record<InRunId, number>> = {};
   runKills = 0;
   runGlyphs: GlyphId[] = [];
   runChassisDrop: ChassisKind | null = null;
   cipherName: string | null = null;
   labOpen = false;
+  /**
+   * Which ad portal (if any) this instance is running inside. Fixed at
+   * construction — the embedding frame can't change mid-session. Used to gate
+   * backend features that some portals don't support or actively reject.
+   *
+   * CrazyGames requires automatic SDK login and rejects external login forms,
+   * so when `portal === "crazygames"` we skip all cloud sync, leaderboard
+   * submissions, and entitlements checks. The game runs fully on localStorage.
+   *
+   * TODO (CrazyGames SDK auth): once the game is approved, wire
+   * `window.CrazyGames.SDK.user.getUserToken()` here and pass it to the
+   * server functions so cloud save can be layered back in without a login form.
+   */
+  private readonly portal = detectPortal();
   private settled = false;
   private mods = emptyMods();
   private acc = 0;
@@ -111,6 +147,7 @@ export class GameEngine {
   }
 
   async boot() {
+    void initAds();
     const login = applyLogin(this.profile);
     this.profile = login.profile;
     this.flushProfile();
@@ -118,6 +155,32 @@ export class GameEngine {
       comeback: login.comeback,
       crateReady: login.crateReady,
     });
+    if (this.portal !== "crazygames") {
+      void (async () => {
+        const synced = await syncOnSignIn(this.profile);
+        if (synced === this.profile) return;
+        this.profile = synced;
+        saveProfile(this.profile);
+        useGame.getState().patch({ profile: this.profile, bankScrap: this.profile.bankScrap });
+        useGame.getState().toast("Cloud sync", "Progress restored from your account", "ok");
+      })();
+      void this.refreshEntitlements();
+    }
+    if (typeof window !== "undefined" && window.location.search.includes("purchase=success")) {
+      // Stripe's webhook usually lands before this redirect completes, but
+      // isn't guaranteed to — one retry after a short delay covers the gap.
+      useGame.getState().toast("Purchase received", "Finalizing your purchase…", "ok");
+      window.history.replaceState(null, "", window.location.pathname);
+      setTimeout(() => void this.refreshEntitlements(), 2500);
+    }
+    this.track("session_start", {
+      highestWave: this.profile.highestWaveReached,
+      prestigeLevel: this.profile.prestigeLevel,
+      loginStreak: this.profile.loginStreak,
+    });
+    if (login.streakUp) {
+      this.track("daily_login", { streak: this.profile.loginStreak, comeback: login.comeback });
+    }
     if (login.comeback) {
       this.pendingNotes.push({
         title: "Operator returned",
@@ -144,6 +207,11 @@ export class GameEngine {
     const persist = () => {
       this.flushProfile();
       if (this.phase === "combat" || this.phase === "upgrade") this.persistRun();
+      this.track("session_end", { wave: this.wave, phase: this.phase });
+      // A backgrounded/closing tab may not survive schedulePush's debounce —
+      // flush immediately here so the last few minutes aren't lost.
+      // Skip on portals that don't support backend auth (e.g. CrazyGames).
+      if (this.portal !== "crazygames") void flushPushNow(this.profile);
     };
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) persist();
@@ -178,11 +246,11 @@ export class GameEngine {
     this.pendingNotes = [];
   }
 
-  startGame(difficulty?: DifficultyTier) {
+  startGame(difficulty?: DifficultyTier, seedOverride?: number) {
     audio.unlock();
     this.profile.difficulty = difficulty ?? this.profile.difficulty;
     this.sim.resetRun();
-    this.seed = (Math.random() * 0xffffffff) >>> 0 || 1;
+    this.seed = seedOverride ?? ((Math.random() * 0xffffffff) >>> 0 || 1);
     this.rng = new SplitMix64(this.seed);
     this.wave = 1;
     this.maxCore = startingCore(this.profile);
@@ -200,6 +268,7 @@ export class GameEngine {
     this.paused = false;
     this.speed = 1;
     this.corePatchUsed = false;
+    this.reviveAdUsed = false;
     this.selectedCoord = null;
     this.acc = 0;
     this.inRun = {};
@@ -219,6 +288,24 @@ export class GameEngine {
     });
     this.syncHud();
     audio.play("wave");
+    getAdAdapter().gameplayStart();
+    this.track("run_start", { difficulty: this.profile.difficulty });
+    if (!this.profile.tutorialDone) this.track("tutorial_step", { step: 1 });
+  }
+
+  /**
+   * Today's shared seeded run: same seed for every player, so the same
+   * sequence of upgrade offers and drop rolls plays out for everyone — normal
+   * difficulty always, so "wave reached" is comparable regardless of a
+   * player's unlock progress. Permanent Workshop/skill/prestige bonuses still
+   * apply (this is "same circuit, same drops — see how far your build gets,"
+   * not a strictly fair esport reset), and the final wave is submitted to the
+   * daily leaderboard on death/cash-out.
+   */
+  startDailyChallenge() {
+    this.dailyChallengeDay = dayStamp();
+    this.startGame("normal", hashStr(`${this.dailyChallengeDay}:daily-v1`) || 1);
+    this.track("daily_challenge_start", { day: this.dailyChallengeDay });
   }
 
   continueRun() {
@@ -240,6 +327,7 @@ export class GameEngine {
     this.profile.difficulty = snap.difficulty;
     this.paused = false;
     this.corePatchUsed = snap.corePatchUsed;
+    this.reviveAdUsed = snap.reviveAdUsed ?? false;
     this.sim.resetRun();
     this.sim.runDamageBonus = snap.runDamageBonus;
     this.sim.runRangeBonus = snap.runRangeBonus;
@@ -254,11 +342,14 @@ export class GameEngine {
     this.sim.restoreTowers(snap.towers ?? []);
     this.refreshMods();
     if (snap.phase === "upgrade") {
+      // Saved mid-upgrade: restore offers and auto-start next wave (no upgrade screen pause)
       this.offers = this.sim.makeOffers(this.wave, this.rng);
       if (this.profile.pendingRareUpgrades > 0) {
         this.offers.unshift(this.sim.injectRareOffer(this.wave));
       }
-      this.phase = "upgrade";
+      this.wave += 1;
+      this.phase = "combat";
+      this.beginWave();
     } else {
       this.offers = [];
       this.phase = "combat";
@@ -268,6 +359,7 @@ export class GameEngine {
     useGame.getState().patch({ screen: "play" });
     this.syncHud();
     audio.play("ui");
+    if (this.phase === "combat") getAdAdapter().gameplayStart();
   }
 
   returnToMenu() {
@@ -283,10 +375,12 @@ export class GameEngine {
     this.labOpen = false;
     useGame.getState().patch({ screen, hasSavedRun: false, phase: "menu", labOpen: false });
     this.syncHud();
+    getAdAdapter().gameplayStop();
+    this.maybeCommercialBreak();
   }
 
   cashOut() {
-    if (this.phase !== "upgrade") return;
+    if (this.phase !== "combat" && this.phase !== "upgrade") return;
     this.settleRun("cashout");
     this.phase = "gameOver";
     this.eventLog = `Banked at wave ${this.wave}.`;
@@ -304,6 +398,8 @@ export class GameEngine {
     this.paused = !this.paused;
     this.syncHud();
     audio.play("ui");
+    if (this.paused) getAdAdapter().gameplayStop();
+    else getAdAdapter().gameplayStart();
   }
 
   setSpeed(s: 1 | 2 | 3) {
@@ -345,6 +441,7 @@ export class GameEngine {
     if (buyWorkshop(this.profile, id)) {
       audio.play("claim");
       this.afterMeta("Workshop rank up");
+      this.track("workshop_upgrade", { id });
     } else audio.play("deny");
   }
 
@@ -415,6 +512,7 @@ export class GameEngine {
     audio.play("place");
     if (this.profile.tutorialDone === false && this.wave === 1) {
       useGame.getState().patch({ tutorialStep: 2 });
+      this.track("tutorial_step", { step: 2 });
     }
     this.persistRun();
     this.flushProfile();
@@ -456,7 +554,7 @@ export class GameEngine {
   }
 
   buyOffer(offer: UpgradeOffer) {
-    if (this.phase !== "upgrade") return;
+    if (this.phase !== "combat" && this.phase !== "upgrade") return;
     if (offer.cost > 0 && this.scrap < offer.cost) {
       this.eventLog = "Not enough scrap.";
       audio.play("deny");
@@ -481,7 +579,7 @@ export class GameEngine {
   }
 
   startNextWave() {
-    if (this.phase !== "upgrade") return;
+    if (this.phase !== "upgrade" && this.phase !== "combat") return;
     this.wave += 1;
     this.offers = [];
     this.phase = "combat";
@@ -557,6 +655,7 @@ export class GameEngine {
     }
     audio.play("claim");
     this.afterMeta(rewardLabel(r));
+    this.track("mission_claim", { id, reward: r.type });
   }
 
   claimPassLevel(level: number) {
@@ -567,6 +666,79 @@ export class GameEngine {
     }
     audio.play("claim");
     this.afterMeta(rewardLabel(r));
+    this.track("battlepass_claim", { level, reward: r.type });
+  }
+
+  /** The "premium_pass_s1" IAP's parallel reward track — additive on top of
+   *  the free one above, never a replacement for it. */
+  claimPremiumPassLevel(level: number) {
+    if (!this.entitlements.has("premium_pass_s1")) {
+      audio.play("deny");
+      return;
+    }
+    const track = PREMIUM_PASS_TRACK.find((t) => t.level === level);
+    if (!track || passLevel(this.profile.battlePassXP) < level) {
+      audio.play("deny");
+      return;
+    }
+    if (this.profile.premiumPassClaimed.includes(level)) {
+      audio.play("deny");
+      return;
+    }
+    this.profile.premiumPassClaimed.push(level);
+    grantReward(this.profile, track.reward);
+    audio.play("claim");
+    this.afterMeta(rewardLabel(track.reward));
+    this.track("premium_pass_claim", { level, reward: track.reward.type });
+  }
+
+  /** Redirects to Stripe Checkout for the given product. */
+  async startCheckout(product: IapProductKey) {
+    try {
+      const { url } = await createIapCheckoutSession({ data: product });
+      this.track("iap_checkout_start", { product });
+      window.location.href = url;
+    } catch (err) {
+      audio.play("deny");
+      useGame
+        .getState()
+        .toast(
+          "Checkout unavailable",
+          err instanceof Error ? err.message : "Try again later",
+          "danger",
+        );
+    }
+  }
+
+  private async refreshEntitlements() {
+    // No backend auth on portals that require their own SDK login (e.g. CrazyGames).
+    if (this.portal === "crazygames") return;
+    try {
+      const keys = await getEntitlements();
+      this.entitlements = new Set(keys);
+      if (this.entitlements.has("starter_pack") && !this.profile.consumedStarterPack) {
+        this.profile.consumedStarterPack = true;
+        this.profile.bankScrap += 500;
+        this.profile.inventoryPulls += 2;
+        this.profile.pendingRareUpgrades += 1;
+        this.flushProfile();
+        useGame
+          .getState()
+          .toast("Starter Pack", "+500 scrap, 2 pulls, 1 rare token", "ok");
+      }
+      useGame.getState().patch({ entitlements: [...this.entitlements] });
+      this.syncHud();
+    } catch {
+      /* signed out, or offline — entitlements stay empty */
+    }
+  }
+
+  /** Interstitial ad break, skipped entirely for a "remove_ads" owner —
+   *  rewarded placements (showRewardedAd) are player-initiated and stay on
+   *  regardless, since players choose those for a bonus. */
+  private maybeCommercialBreak() {
+    if (this.entitlements.has("remove_ads")) return;
+    void getAdAdapter().commercialBreak();
   }
 
   doPrestige() {
@@ -576,6 +748,7 @@ export class GameEngine {
     }
     audio.play("clear");
     this.afterMeta("Prestige +5 skill points");
+    this.track("prestige", { level: this.profile.prestigeLevel });
   }
 
   claimCrate() {
@@ -587,6 +760,7 @@ export class GameEngine {
     audio.play("claim");
     useGame.getState().patch({ crateReady: false });
     this.afterMeta(rewardLabel(r));
+    this.track("daily_crate_claim", { reward: r.type, streak: this.profile.loginStreak });
   }
 
   buy(item: ShopItem) {
@@ -596,12 +770,112 @@ export class GameEngine {
     }
     audio.play("claim");
     this.afterMeta(`Purchased ${item.title}`);
+    this.track("shop_purchase", { itemId: item.id, cost: item.cost });
+  }
+
+  // --- Rewarded-ad placements ---------------------------------------------
+  // Every placement amplifies a reward the player can already earn for
+  // free — never gates content behind an ad. Eligibility is checked before
+  // showing the ad so we never spend an impression on nothing to grant.
+
+  async watchReviveAd() {
+    if (this.phase !== "gameOver" || this.reviveAdUsed || this.coreHP > 0) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("revive");
+    if (result !== "granted") return;
+    this.reviveAdUsed = true;
+    this.coreHP = Math.max(this.coreHP, 8);
+    this.maxCore = Math.max(this.maxCore, this.coreHP);
+    this.phase = "combat";
+    this.sim.queueWave(waveComposition(this.wave));
+    this.eventLog = "Ad revive: core restored.";
+    audio.play("upgrade");
+    this.flushProfile();
+    this.persistRun();
+    this.syncHud();
+    getAdAdapter().gameplayStart();
+    this.track("ad_reward_granted", { placement: "revive", wave: this.wave });
+  }
+
+  async claimCrateBonusAd() {
+    const today = dayStamp();
+    if (this.profile.dailyCrateDay !== today || this.profile.dailyCrateAdBonusDay === today) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("crate_double");
+    if (result !== "granted") return;
+    const r = claimDailyCrateAdBonus(this.profile);
+    if (!r) return;
+    audio.play("claim");
+    this.afterMeta(`Bonus: ${rewardLabel(r)}`);
+    this.track("ad_reward_granted", { placement: "crate_double" });
+  }
+
+  async claimMissionBonusAd(id: string) {
+    const m = this.profile.missions.find((x) => x.id === id);
+    if (!m || !m.claimed || m.adBoosted) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd(`mission_double:${id}`);
+    if (result !== "granted") return;
+    const r = claimMissionAdBonus(this.profile, id);
+    if (!r) return;
+    audio.play("claim");
+    this.afterMeta(`Bonus: ${rewardLabel(r)}`);
+    this.track("ad_reward_granted", { placement: "mission_double" });
+  }
+
+  async claimPassBonusAd() {
+    const today = dayStamp();
+    if (this.profile.dailyPassAdBonusDay === today) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("pass_xp_bonus");
+    if (result !== "granted") return;
+    const amount = claimPassAdBonus(this.profile);
+    if (amount == null) return;
+    audio.play("claim");
+    this.afterMeta(`+${amount} pass XP`);
+    this.track("ad_reward_granted", { placement: "pass_xp_bonus" });
+  }
+
+  async claimShopBonusAd() {
+    const today = dayStamp();
+    if (this.profile.dailyShopAdBonusDay === today) {
+      audio.play("deny");
+      return;
+    }
+    const result = await this.showAd("shop_free_item");
+    if (result !== "granted") return;
+    const item = claimShopAdBonus(this.profile);
+    if (!item) return;
+    audio.play("claim");
+    this.afterMeta(`Free: ${item.title}`);
+    this.track("ad_reward_granted", { placement: "shop_free_item" });
+  }
+
+  private async showAd(placementId: string): Promise<AdResult> {
+    this.track("ad_requested", { placement: placementId });
+    const result = await getAdAdapter().showRewardedAd(placementId);
+    if (result !== "granted") {
+      audio.play("deny");
+      if (result === "unavailable") {
+        useGame.getState().toast("Ad unavailable", "Try again in a moment", "info");
+      }
+    }
+    return result;
   }
 
   finishTutorial() {
     this.profile.tutorialDone = true;
     this.flushProfile();
     useGame.getState().patch({ tutorialStep: 0, briefing: false, profile: this.profile });
+    this.track("tutorial_complete");
   }
 
   setSetting<K extends keyof PlayerProfile>(key: K, value: PlayerProfile[K]) {
@@ -739,6 +1013,7 @@ export class GameEngine {
   private beginWave() {
     this.sim.resetCombatants();
     this.sim.queueWave(waveComposition(this.wave));
+    this.sim.spawnCooldown = 0; // first enemy of new wave spawns immediately — no visible gap
     const income = (this.inRun.income ?? 0) * IN_RUN.income.step;
     if (income) this.scrap += income;
     if (this.mods.corePerWave > 0) {
@@ -751,27 +1026,35 @@ export class GameEngine {
 
   private endWave() {
     if (this.phase !== "combat") return;
+    const clearedWave = this.wave;
     progressMission(this.profile, "Clear", 1);
     this.checkMilestones();
     this.endless = true;
     this.profile.isEndlessUnlocked = true;
     this.maybeDropChassis();
-    this.rng = new SplitMix64(this.seed + this.wave * 997);
-    this.offers = this.sim.makeOffers(this.wave, this.rng);
+    this.rng = new SplitMix64(this.seed + clearedWave * 997);
+    this.offers = this.sim.makeOffers(clearedWave, this.rng);
     if (this.profile.pendingRareUpgrades > 0) {
-      this.offers.unshift(this.sim.injectRareOffer(this.wave));
+      this.offers.unshift(this.sim.injectRareOffer(clearedWave));
     }
-    this.noteWave(this.wave);
-    this.profile.skillPoints += Math.max(1, Math.floor(this.wave / 5));
-    this.profile.battlePassXP += this.wave * 8;
-    this.phase = "upgrade";
-    this.eventLog = `Wave ${this.wave} cleared. Lane holds.`;
+    this.noteWave(clearedWave);
+    this.profile.skillPoints += Math.max(1, Math.floor(clearedWave / 5));
+    this.profile.battlePassXP += clearedWave * 8;
+    // No upgrade-screen pause — next wave starts immediately, offers float over HUD
+    this.wave += 1;
+    this.eventLog = `Wave ${clearedWave} cleared. Wave ${this.wave} incoming.`;
     audio.play("clear");
     this.renderer.addTrauma(0.2);
+    this.beginWave();
     this.flushProfile();
     this.persistRun();
     this.syncHud();
-    if (!this.profile.tutorialDone) useGame.getState().patch({ tutorialStep: 3 });
+    if (!this.profile.tutorialDone) {
+      useGame.getState().patch({ tutorialStep: 3 });
+      this.track("tutorial_step", { step: 3 });
+    }
+    this.track("wave_cleared", { wave: clearedWave, difficulty: this.profile.difficulty });
+    this.maybeCommercialBreak();
   }
 
   private failRun() {
@@ -784,6 +1067,8 @@ export class GameEngine {
     this.flushProfile();
     this.persistRun();
     this.syncHud();
+    getAdAdapter().gameplayStop();
+    this.maybeCommercialBreak();
   }
 
   private checkMilestones() {
@@ -797,6 +1082,7 @@ export class GameEngine {
       } else if (m.reward.type === "rareUpgrade") this.profile.pendingRareUpgrades += 1;
       this.eventLog = `Milestone wave ${m.wave} claimed.`;
       useGame.getState().toast("Milestone", rewardLabel(m.reward), "ok");
+      this.track("milestone_claim", { wave: m.wave, reward: m.reward.type });
     }
   }
 
@@ -840,6 +1126,7 @@ export class GameEngine {
       runFireRateBonus: this.sim.runFireRateBonus,
       runBountyBonus: this.sim.runBountyBonus,
       corePatchUsed: this.corePatchUsed,
+      reviveAdUsed: this.reviveAdUsed,
       inRun: { ...this.inRun },
       runKills: this.runKills,
     };
@@ -875,8 +1162,28 @@ export class GameEngine {
     this.profile.bankScrap += recap.banked;
     clearRun();
     this.flushProfile();
+    this.track("run_end", {
+      reason,
+      wave: this.wave,
+      difficulty: this.profile.difficulty,
+      kills: recap.kills,
+      bankedScrap: recap.banked,
+    });
     const title = reason === "cashout" ? "Coins banked" : reason === "abort" ? "Run aborted" : "Core offline";
     useGame.getState().toast(title, `+${recap.banked} coins · wave ${this.wave}`, reason === "death" ? "danger" : "ok");
+    if (this.dailyChallengeDay) {
+      const day = this.dailyChallengeDay;
+      const wave = this.wave;
+      this.dailyChallengeDay = null;
+      // Skip leaderboard submission on portals without backend auth (e.g. CrazyGames).
+      if (this.portal !== "crazygames") {
+        submitDailyScore({ data: { day, wave, displayName: this.profile.displayName } })
+          .then(() => this.track("daily_challenge_submit", { day, wave }))
+          .catch(() => {
+            /* offline / server hiccup — the run still counted locally */
+          });
+      }
+    }
   }
 
   private makeRecap(reason: "death" | "cashout" | "abort"): RunRecap {
@@ -915,6 +1222,13 @@ export class GameEngine {
     useGame.getState().toast("Chassis recovered", kind, "ok");
   }
 
+  /** Analytics, gated on the save-integrity flag (see meta.ts) — a
+   *  hand-edited save is excluded so its numbers don't skew the funnel. */
+  private track(event: string, props: EventProps = {}) {
+    if (this.profile.tamperFlag) return;
+    track(event, props);
+  }
+
   private afterMeta(msg: string) {
     this.flushProfile();
     this.syncHud();
@@ -924,6 +1238,8 @@ export class GameEngine {
   private flushProfile() {
     const unlocked = checkAchievements(this.profile);
     saveProfile(this.profile);
+    // No cloud push on portals without backend auth (e.g. CrazyGames); localStorage is the save.
+    if (this.portal !== "crazygames") schedulePush(this.profile);
     for (const a of unlocked) {
       useGame.getState().toast(a.title, a.detail, "ok");
     }

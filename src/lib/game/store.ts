@@ -47,6 +47,7 @@ export type GameStore = {
   cipherName: string | null;
   labOpen: boolean;
   recap: RunRecap | null;
+  entitlements: string[];
   hydrate: (p: PlayerProfile, hasRun: boolean, extras: { comeback: boolean; crateReady: boolean }) => void;
   patch: (partial: Partial<GameStore>) => void;
   toast: (title: string, detail: string, tone?: Toast["tone"]) => void;
@@ -89,6 +90,7 @@ export const useGame = create<GameStore>((set) => ({
   cipherName: null,
   labOpen: false,
   recap: null,
+  entitlements: [],
   hydrate: (p, hasRun, extras) =>
     set({
       ready: true,

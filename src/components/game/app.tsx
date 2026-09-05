@@ -18,7 +18,10 @@ import {
   Zap,
 } from "lucide-react";
 import { bindEngine, GameEngine, getEngine } from "@/lib/game/engine";
+import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import { shopForDay } from "@/lib/game/meta";
+import { getDailyLeaderboard } from "@/lib/game/leaderboard-api";
+import { IAP_CATALOG, IAP_PRODUCT_KEYS } from "@/lib/game/iap-catalog";
 import { CHASSIS, CIPHERS, GLYPH, prefixCipher, recipeHint } from "@/lib/game/ciphers";
 import { IN_RUN, IN_RUN_IDS, WORKSHOP, inRunCost, workshopCost } from "@/lib/game/workshop";
 import { useGame } from "@/lib/game/store";
@@ -28,6 +31,7 @@ import {
   GLYPH_IDS,
   MODULE,
   PASS_TRACK,
+  PREMIUM_PASS_TRACK,
   SKILL,
   SKILL_IDS,
   TOWER,
@@ -142,6 +146,8 @@ function MenuLayer() {
         {screen === "shop" && <ShopPane />}
         {screen === "settings" && <SettingsPane />}
         {screen === "ops" && <OpsPane />}
+        {screen === "daily" && <DailyPane />}
+        {screen === "premium" && <PremiumPane />}
       </div>
     </div>
   );
@@ -256,7 +262,16 @@ function MenuHome() {
               </span>
             </div>
             <Bar value={m.progress} max={m.target} />
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              {m.claimed && !m.adBoosted && (
+                <Btn
+                  variant="quiet"
+                  className="min-h-9 px-3 text-xs"
+                  onClick={() => getEngine()?.claimMissionBonusAd(m.id)}
+                >
+                  Watch ad: double
+                </Btn>
+              )}
               <Btn
                 variant="quiet"
                 className="min-h-9 px-3 text-xs"
@@ -273,6 +288,11 @@ function MenuHome() {
             Claim daily crate
           </Btn>
         )}
+        {!crate && p.dailyCrateDay === dayStamp() && p.dailyCrateAdBonusDay !== dayStamp() && (
+          <Btn variant="quiet" onClick={() => getEngine()?.claimCrateBonusAd()}>
+            Watch ad: double crate
+          </Btn>
+        )}
       </Panel>
 
       <p className="text-center text-xs text-faint">
@@ -285,6 +305,8 @@ function MenuHome() {
         <NavTile icon={<Sparkles className="size-4" />} label="Skills" to="skills" />
         <NavTile icon={<Cpu className="size-4" />} label="Modules" to="modules" />
         <NavTile icon={<Trophy className="size-4" />} label="Battle pass" to="pass" />
+        <NavTile icon={<Trophy className="size-4" />} label="Daily challenge" to="daily" />
+        <NavTile icon={<Zap className="size-4" />} label="Premium" to="premium" />
         <NavTile icon={<ShoppingBag className="size-4" />} label="Shop" to="shop" />
         <NavTile icon={<ClipboardList className="size-4" />} label="Ops log" to="ops" />
         <NavTile icon={<Cog className="size-4" />} label="Settings" to="settings" />
@@ -540,6 +562,8 @@ function ModulesPane() {
 
 function PassPane() {
   const p = useGame((s) => s.profile);
+  const entitlements = useGame((s) => s.entitlements);
+  const hasPremium = entitlements.includes("premium_pass_s1");
   const lvl = passLevel(p.battlePassXP);
   return (
     <div className="flex flex-col gap-4 py-4">
@@ -549,22 +573,51 @@ function PassPane() {
         Level {lvl} · {p.battlePassXP} XP
       </p>
       <Bar value={p.battlePassXP % 100} max={100} />
+      {p.dailyPassAdBonusDay !== dayStamp() && (
+        <Btn variant="quiet" onClick={() => getEngine()?.claimPassBonusAd()}>
+          Watch ad: +40 XP
+        </Btn>
+      )}
+      {!hasPremium && (
+        <Btn onClick={() => useGame.getState().patch({ screen: "premium" })}>
+          Get the Premium Pass for a bonus track
+        </Btn>
+      )}
       {PASS_TRACK.map((t) => {
         const claimed = p.battlePassClaimed.includes(t.level);
+        const premiumTier = PREMIUM_PASS_TRACK.find((pt) => pt.level === t.level);
+        const premiumClaimed = p.premiumPassClaimed.includes(t.level);
         return (
-          <Panel key={t.level} className="flex items-center justify-between gap-3">
-            <div>
-              <div className="font-medium">Tier {t.level}</div>
-              <div className="text-xs text-muted">{rewardLabel(t.reward)}</div>
-            </div>
-            <Btn
-              variant="primary"
-              disabled={claimed || lvl < t.level}
-              onClick={() => getEngine()?.claimPassLevel(t.level)}
-            >
-              {claimed ? "Claimed" : "Claim"}
-            </Btn>
-          </Panel>
+          <div key={t.level} className="space-y-2">
+            <Panel className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Tier {t.level}</div>
+                <div className="text-xs text-muted">{rewardLabel(t.reward)}</div>
+              </div>
+              <Btn
+                variant="primary"
+                disabled={claimed || lvl < t.level}
+                onClick={() => getEngine()?.claimPassLevel(t.level)}
+              >
+                {claimed ? "Claimed" : "Claim"}
+              </Btn>
+            </Panel>
+            {premiumTier && hasPremium && (
+              <Panel className="flex items-center justify-between gap-3 border-cyan/30 bg-cyan/5">
+                <div>
+                  <div className="font-medium text-cyan">Premium bonus</div>
+                  <div className="text-xs text-muted">{rewardLabel(premiumTier.reward)}</div>
+                </div>
+                <Btn
+                  variant="primary"
+                  disabled={premiumClaimed || lvl < t.level}
+                  onClick={() => getEngine()?.claimPremiumPassLevel(t.level)}
+                >
+                  {premiumClaimed ? "Claimed" : "Claim"}
+                </Btn>
+              </Panel>
+            )}
+          </div>
         );
       })}
     </div>
@@ -579,6 +632,11 @@ function ShopPane() {
       <Back />
       <h2 className="font-display text-3xl">Night market</h2>
       <p className="text-sm text-muted">Bank {p.bankScrap} · Rotates at midnight</p>
+      {p.dailyShopAdBonusDay !== dayStamp() && (
+        <Btn variant="quiet" onClick={() => getEngine()?.claimShopBonusAd()}>
+          Watch ad: free item
+        </Btn>
+      )}
       {items.map((item) => {
         const bought = p.dailyShopBought.includes(item.id);
         return (
@@ -597,6 +655,115 @@ function ShopPane() {
           </Panel>
         );
       })}
+    </div>
+  );
+}
+
+function DailyPane() {
+  const p = useGame((s) => s.profile);
+  const [scores, setScores] = useState<Array<{ displayName: string; wave: number }> | null>(null);
+  const [error, setError] = useState(false);
+  const today = dayStamp();
+
+  useEffect(() => {
+    let cancelled = false;
+    getDailyLeaderboard({ data: today })
+      .then((rows) => {
+        if (!cancelled) setScores(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [today]);
+
+  return (
+    <div className="flex flex-col gap-4 py-4">
+      <Back />
+      <h2 className="font-display text-3xl">Daily challenge</h2>
+      <p className="text-sm text-muted">
+        Same circuit, same drops, for everyone today — Normal difficulty, your
+        permanent upgrades still apply. Resets {formatHMS(msUntilMidnight())}.
+      </p>
+      <Btn variant="primary" onClick={() => getEngine()?.startDailyChallenge()}>
+        <Play className="size-4" />
+        Play today's challenge
+      </Btn>
+      <Panel className="space-y-2">
+        <p className="text-xs uppercase tracking-[0.2em] text-muted">Today's leaderboard</p>
+        {error && <p className="text-sm text-muted">Sign in to see and post scores.</p>}
+        {!error && !scores && <p className="text-sm text-muted">Loading…</p>}
+        {!error && scores?.length === 0 && (
+          <p className="text-sm text-muted">No runs yet today — be the first.</p>
+        )}
+        {scores?.map((row, i) => (
+          <div
+            key={`${row.displayName}-${i}`}
+            className="flex items-center justify-between text-sm"
+          >
+            <span className="text-muted">
+              #{i + 1} {row.displayName}
+              {row.displayName === p.displayName ? " (you)" : ""}
+            </span>
+            <span className="tabular text-cyan">wave {row.wave}</span>
+          </div>
+        ))}
+      </Panel>
+    </div>
+  );
+}
+
+function PremiumPane() {
+  const p = useGame((s) => s.profile);
+  const entitlements = useGame((s) => s.entitlements);
+  const [pending, setPending] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col gap-4 py-4">
+      <Back />
+      <h2 className="font-display text-3xl">Premium</h2>
+      <p className="text-sm text-muted">
+        Optional, one-time purchases. Nothing here sells power — no scrap, no
+        skill points, no shortcuts past the Workshop grind.
+      </p>
+      <SignedOut>
+        <Panel className="space-y-2">
+          <p className="text-sm text-muted">Sign in to make a purchase.</p>
+          <Btn onClick={() => (window.location.href = "/login")}>Sign in</Btn>
+        </Panel>
+      </SignedOut>
+      <SignedIn>
+        {IAP_PRODUCT_KEYS.map((key) => {
+          const item = IAP_CATALOG[key];
+          const owned = entitlements.includes(key);
+          return (
+            <Panel key={key} className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">{item.label}</div>
+                <div className="tabular text-cyan">{item.priceDisplay}</div>
+              </div>
+              <p className="text-xs text-muted">{item.blurb}</p>
+              <Btn
+                variant="primary"
+                className="w-full"
+                disabled={owned || pending === key}
+                onClick={() => {
+                  setPending(key);
+                  void getEngine()
+                    ?.startCheckout(key)
+                    .finally(() => setPending(null));
+                }}
+              >
+                {owned ? "Owned" : pending === key ? "Redirecting…" : "Buy"}
+              </Btn>
+            </Panel>
+          );
+        })}
+      </SignedIn>
+      <p className="text-xs text-faint">
+        Operator {p.displayName} · purchases sync to your account, not this device.
+      </p>
     </div>
   );
 }
@@ -684,6 +851,18 @@ function SettingsPane() {
         Prestige (+5 skill points)
       </Btn>
       <p className="text-xs text-faint">Unlocks after wave 50. Keeps skills, modules, workshop, and forge.</p>
+      <Panel className="space-y-3">
+        <p className="text-xs uppercase tracking-[0.2em] text-muted">Cloud sync</p>
+        <SignedOut>
+          <p className="text-sm text-muted">
+            Sign in to sync your save and streak across devices.
+          </p>
+          <Btn onClick={() => (window.location.href = "/login")}>Sign in</Btn>
+        </SignedOut>
+        <SignedIn>
+          <UserButton />
+        </SignedIn>
+      </Panel>
       <Panel className="space-y-3">
         <p className="text-xs uppercase tracking-[0.2em] text-muted">Operator save</p>
         <Btn onClick={() => getEngine()?.downloadSave()}>Download save file</Btn>
@@ -892,7 +1071,7 @@ function PlayHud() {
           <div className="pointer-events-auto max-w-sm rounded-lg border border-line hud-panel px-4 py-3 text-sm">
             {tutorial === 1 && "Tap a dark tile beside the circuit to deploy Pulse."}
             {tutorial === 2 && "Hostiles leak into the vault if they finish the lane. Keep fire on the front."}
-            {tutorial === 3 && "Wave clear. Install an upgrade, then launch the next wave."}
+            {tutorial === 3 && "Wave clear. Upgrades appear on the right — tap to install while fighting."}
             <div className="mt-2 flex justify-end">
               <Btn variant="quiet" className="min-h-9" onClick={() => getEngine()?.finishTutorial()}>
                 Dismiss
@@ -912,7 +1091,7 @@ function PlayHud() {
         </CenterCard>
       )}
 
-      {phase === "upgrade" && <UpgradeCard />}
+      {phase === "combat" && <UpgradePanel />}
       {phase === "gameOver" && <GameOverCard />}
     </>
   );
@@ -928,39 +1107,36 @@ function CenterCard({ children }: { children: ReactNode }) {
   );
 }
 
-function UpgradeCard() {
-  const wave = useGame((s) => s.wave);
+function UpgradePanel() {
   const scrap = useGame((s) => s.scrap);
-  const core = useGame((s) => s.coreHP);
   const offers = useGame((s) => s.offers);
+  if (offers.length === 0) return null;
   return (
-    <CenterCard>
-      <h2 className="font-display text-2xl tracking-wide text-cyan">Wave {wave} cleared</h2>
-      <p className="text-sm text-muted">
-        Scrap {scrap} · Core {core}
-      </p>
-      {offers.map((o) => (
+    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center p-2 pb-24 pt-16">
+      <div className="pointer-events-auto flex w-44 flex-col gap-1.5 overflow-y-auto">
+        <div className="px-1 font-mono text-[10px] uppercase tracking-widest text-cyan">Upgrades</div>
+        {offers.map((o) => (
+          <button
+            key={o.id}
+            disabled={o.cost > 0 && scrap < o.cost}
+            onClick={() => getEngine()?.buyOffer(o)}
+            className="rounded-lg border border-line bg-panel/90 p-2 text-left backdrop-blur-sm disabled:opacity-40"
+          >
+            <div className="flex items-start justify-between gap-1">
+              <span className="text-xs font-medium leading-tight">{o.title}</span>
+              <span className="shrink-0 font-mono text-[10px] text-cyan">{o.cost === 0 ? "FREE" : o.cost}</span>
+            </div>
+            <div className="mt-0.5 text-[10px] leading-tight text-muted">{o.detail}</div>
+          </button>
+        ))}
         <button
-          key={o.id}
-          disabled={o.cost > 0 && scrap < o.cost}
-          onClick={() => getEngine()?.buyOffer(o)}
-          className="rounded-lg border border-line bg-panel-2 p-3 text-left disabled:opacity-40"
+          onClick={() => getEngine()?.cashOut()}
+          className="rounded-lg border border-line bg-panel/90 px-2 py-1.5 text-left text-[10px] text-muted backdrop-blur-sm"
         >
-          <div className="flex items-center justify-between">
-            <span className="font-medium">{o.title}</span>
-            <span className="font-mono text-sm text-cyan">{o.cost === 0 ? "FREE" : o.cost}</span>
-          </div>
-          <div className="text-xs text-muted">{o.detail}</div>
+          Bank &amp; end run
         </button>
-      ))}
-      <Btn variant="primary" onClick={() => getEngine()?.startNextWave()}>
-        Next wave
-      </Btn>
-      <Btn onClick={() => getEngine()?.cashOut()}>Bank coins to Workshop</Btn>
-      <Btn variant="quiet" onClick={() => getEngine()?.returnToMenu()}>
-        Abort (half coins)
-      </Btn>
-    </CenterCard>
+      </div>
+    </div>
   );
 }
 
@@ -971,6 +1147,7 @@ function GameOverCard() {
   const recap = p.lastRecap;
   const engine = getEngine();
   const canPatch = engine ? !engine.corePatchUsed && core <= 0 && (p.bankScrap >= 80 || useGame.getState().scrap >= 80) : false;
+  const canRevive = engine ? !engine.reviveAdUsed && core <= 0 : false;
   return (
     <CenterCard>
       <h2 className={cn("font-display text-3xl", core > 0 ? "text-cyan" : "text-signal")}>
@@ -997,6 +1174,11 @@ function GameOverCard() {
             <div className="text-xs text-muted">Glyphs {recap.glyphs.map((g) => g.toUpperCase()).join(" · ")}</div>
           )}
         </Panel>
+      )}
+      {canRevive && (
+        <Btn variant="primary" onClick={() => getEngine()?.watchReviveAd()}>
+          Watch ad to continue
+        </Btn>
       )}
       {canPatch && (
         <Btn onClick={() => getEngine()?.corePatch()}>Emergency patch (80 scrap)</Btn>
