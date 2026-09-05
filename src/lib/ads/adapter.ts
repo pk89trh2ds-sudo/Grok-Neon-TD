@@ -104,10 +104,21 @@ function timeout(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-type Portal = "poki" | "crazygames" | null;
+export type Portal = "poki" | "crazygames" | null;
 
-/** Where was this page framed from? Checked before any ad SDK is loaded. */
-function detectPortal(): Portal {
+/**
+ * Where was this page framed from? Checked before any ad SDK is loaded.
+ *
+ * Also imported by `src/lib/auth/client.ts` and `src/lib/game/engine.ts` to
+ * gate backend features (cloud save, leaderboard, auth UI) that portals either
+ * don't support or actively reject. CrazyGames, for example, requires automatic
+ * SDK login and rejects external login forms — so when `detectPortal()` returns
+ * `"crazygames"` the game runs auth-free with local save only (no sign-in UI,
+ * no cloud push, no leaderboard submissions). A TODO for future integration:
+ * add CrazyGames SDK user auth (`window.CrazyGames.SDK.user.getUserToken()`)
+ * at the guard points below once the game is approved on the platform.
+ */
+export function detectPortal(): Portal {
   if (typeof document === "undefined") return null;
   try {
     const referrer = document.referrer || "";

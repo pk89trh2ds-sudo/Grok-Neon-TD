@@ -1,6 +1,6 @@
 import { audio } from "./audio";
 import { track, type EventProps } from "../analytics";
-import { getAdAdapter, initAds, type AdResult } from "../ads/adapter";
+import { detectPortal, getAdAdapter, initAds, type AdResult } from "../ads/adapter";
 import { flushPushNow, schedulePush, syncOnSignIn } from "./cloud-sync";
 import {
   applyLogin,
@@ -117,6 +117,20 @@ export class GameEngine {
   runChassisDrop: ChassisKind | null = null;
   cipherName: string | null = null;
   labOpen = false;
+  /**
+   * Which ad portal (if any) this instance is running inside. Fixed at
+   * construction — the embedding frame can't change mid-session. Used to gate
+   * backend features that some portals don't support or actively reject.
+   *
+   * CrazyGames requires automatic SDK login and rejects external login forms,
+   * so when `portal === "crazygames"` we skip all cloud sync, leaderboard
+   * submissions, and entitlements checks. The game runs fully on localStorage.
+   *
+   * TODO (CrazyGames SDK auth): once the game is approved, wire
+   * `window.CrazyGames.SDK.user.getUserToken()` here and pass it to the
+   * server functions so cloud save can be layered back in without a login form.
+   */
+  private readonly portal = detectPortal();
   private settled = false;
   private mods = emptyMods();
   private acc = 0;
@@ -141,15 +155,17 @@ export class GameEngine {
       comeback: login.comeback,
       crateReady: login.crateReady,
     });
-    void (async () => {
-      const synced = await syncOnSignIn(this.profile);
-      if (synced === this.profile) return;
-      this.profile = synced;
-      saveProfile(this.profile);
-      useGame.getState().patch({ profile: this.profile, bankScrap: this.profile.bankScrap });
-      useGame.getState().toast("Cloud sync", "Progress restored from your account", "ok");
-    })();
-    void this.refreshEntitlements();
+    if (this.portal !== "crazygames") {
+      void (async () => {
+        const synced = await syncOnSignIn(this.profile);
+        if (synced === this.profile) return;
+        this.profile = synced;
+        saveProfile(this.profile);
+        useGame.getState().patch({ profile: this.profile, bankScrap: this.profile.bankScrap });
+        useGame.getState().toast("Cloud sync", "Progress restored from your account", "ok");
+      })();
+      void this.refreshEntitlements();
+    }
     if (typeof window !== "undefined" && window.location.search.includes("purchase=success")) {
       // Stripe's webhook usually lands before this redirect completes, but
       // isn't guaranteed to — one retry after a short delay covers the gap.
@@ -194,7 +210,8 @@ export class GameEngine {
       this.track("session_end", { wave: this.wave, phase: this.phase });
       // A backgrounded/closing tab may not survive schedulePush's debounce —
       // flush immediately here so the last few minutes aren't lost.
-      void flushPushNow(this.profile);
+      // Skip on portals that don't support backend auth (e.g. CrazyGames).
+      if (this.portal !== "crazygames") void flushPushNow(this.profile);
     };
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) persist();
@@ -691,6 +708,8 @@ export class GameEngine {
   }
 
   private async refreshEntitlements() {
+    // No backend auth on portals that require their own SDK login (e.g. CrazyGames).
+    if (this.portal === "crazygames") return;
     try {
       const keys = await getEntitlements();
       this.entitlements = new Set(keys);
@@ -1150,11 +1169,14 @@ export class GameEngine {
       const day = this.dailyChallengeDay;
       const wave = this.wave;
       this.dailyChallengeDay = null;
-      submitDailyScore({ data: { day, wave, displayName: this.profile.displayName } })
-        .then(() => this.track("daily_challenge_submit", { day, wave }))
-        .catch(() => {
-          /* offline / server hiccup — the run still counted locally */
-        });
+      // Skip leaderboard submission on portals without backend auth (e.g. CrazyGames).
+      if (this.portal !== "crazygames") {
+        submitDailyScore({ data: { day, wave, displayName: this.profile.displayName } })
+          .then(() => this.track("daily_challenge_submit", { day, wave }))
+          .catch(() => {
+            /* offline / server hiccup — the run still counted locally */
+          });
+      }
     }
   }
 
@@ -1210,7 +1232,8 @@ export class GameEngine {
   private flushProfile() {
     const unlocked = checkAchievements(this.profile);
     saveProfile(this.profile);
-    schedulePush(this.profile);
+    // No cloud push on portals without backend auth (e.g. CrazyGames); localStorage is the save.
+    if (this.portal !== "crazygames") schedulePush(this.profile);
     for (const a of unlocked) {
       useGame.getState().toast(a.title, a.detail, "ok");
     }

@@ -2,6 +2,7 @@ import { genericOAuthClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { runPreSignInSignOut, runSignOut } from "../../../scripts/sign-out-plan.mjs";
 import { GROK_PROVIDERS } from "./providers";
+import { detectPortal } from "@/lib/ads/adapter";
 
 /**
  * Better Auth client for this React SPA (browser-side).
@@ -30,12 +31,12 @@ export const authClient = createAuthClient({
 
 /**
  * True when sign-in UI should be shown — i.e. whenever `VITE_AUTH_ENABLED` is
- * not `"false"`. The shipped template sets it to `"false"`
- * (`.grok/app-env.json`), which selects the dev user (see `use-current-user`);
- * with the key removed, sign-in is real in preview (baked preview client) and
- * when deployed (injected per-app client).
+ * not `"false"` AND the game is not running inside a portal that requires its
+ * own auth flow (CrazyGames demands automatic SDK login and explicitly rejects
+ * external login forms). On those portals we run auth-free with local save only.
  */
-export const authEnabled = import.meta.env.VITE_AUTH_ENABLED !== "false";
+export const authEnabled =
+  import.meta.env.VITE_AUTH_ENABLED !== "false" && detectPortal() !== "crazygames";
 
 /** The upstream providers to render sign-in buttons for. */
 export { GROK_PROVIDERS };
