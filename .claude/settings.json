@@ -1,0 +1,17 @@
+{
+  "codebaseSummary": "Grok-Neon-TD: Canvas2D tower defense game. Phases 0-3 complete: analytics (daily challenges + seeded RNG), cloud save (Supabase Postgres), leaderboards (ranked daily missions), Stripe IAP (Remove Ads pass, Premium Battle Pass, Starter Pack). Tech: React 19 + TanStack Router + Canvas2D renderer, Zustand state, Better Auth (email/password only), Vite 8 + Nitro v3 (two build targets: Vercel SSR + static SPA). Portal-ready for Poki/CrazyGames/itch.io. Blocked: Stripe products + RLS policies + DATABASE_URL (user-side actions).",
+  "frequentCommands": [
+    "npm run dev",
+    "npm run typecheck && npm run test",
+    "npm run build:portal",
+    "npm run db:migrate"
+  ],
+  "repositoryStructure": "Game logic: src/lib/game/{types,sim,meta,engine,store,renderer,workshop,ciphers}.ts (pure logic), {cloud-sync-api,leaderboard-api,entitlements-api}.ts (server functions—no .server.ts suffix due to import-protection rule). Portal adapter: src/lib/ads/adapter.ts (Poki/CrazyGames detection via referrer/ancestorOrigins). Auth: src/lib/auth/{server,client,email-password}.ts (Better Auth wiring, email/password only). HTTP wiring: server/middleware/{auth-api,stripe-webhook}.ts (Nitro) + vite.config.ts plugins for dev. Schema: migrations/{0001..0004}.sql (auth, profiles, leaderboard, entitlements).",
+  "notablePatterns": [
+    "Dual-wiring: every HTTP endpoint has Nitro middleware (build/deploy) + Vite configureServer plugin (dev) mounting the same handler",
+    ".server.ts import-protection rule: name createServerFn files WITHOUT .server.ts suffix (cloud-sync-api.ts, etc.); reserve .server.ts only for files never imported by client",
+    "Seeded RNG (SplitMix64/hashStr) ensures deterministic daily shops and challenges across all players",
+    "Save-integrity checksum flags tampered saves without rejecting them",
+    "Portal detection runs BEFORE loading SDK scripts; infer portal from document.referrer/location.ancestorOrigins, never from which SDK responds"
+  ]
+}
