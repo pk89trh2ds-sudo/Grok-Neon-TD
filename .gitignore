@@ -6,3 +6,4 @@ node_modules/
 # Portal build output (npm run build:portal) — generated on demand, zipped
 # for upload to Poki/CrazyGames/itch.io. Not deployed anywhere from git.
 .output/
+neon-td-portal-build.zip
