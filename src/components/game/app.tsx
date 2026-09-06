@@ -1087,6 +1087,7 @@ function PlayHud() {
           <Btn variant="primary" onClick={() => getEngine()?.pauseToggle()}>
             Resume
           </Btn>
+          <Btn onClick={() => getEngine()?.cashOut()}>Bank &amp; end run</Btn>
           <Btn onClick={() => getEngine()?.returnToMenu()}>Abort to menu</Btn>
         </CenterCard>
       )}
@@ -1129,12 +1130,6 @@ function UpgradePanel() {
             <div className="mt-0.5 text-[10px] leading-tight text-muted">{o.detail}</div>
           </button>
         ))}
-        <button
-          onClick={() => getEngine()?.cashOut()}
-          className="rounded-lg border border-line bg-panel/90 px-2 py-1.5 text-left text-[10px] text-muted backdrop-blur-sm"
-        >
-          Bank &amp; end run
-        </button>
       </div>
     </div>
   );

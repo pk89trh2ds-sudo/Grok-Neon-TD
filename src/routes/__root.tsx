@@ -1,4 +1,5 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import { AuthProvider } from "@/lib/auth/provider";
 import appCss from "../styles.css?url";
 
@@ -13,7 +14,8 @@ export const Route = createRootRoute({
       { name: "theme-color", content: "#07090e" },
       {
         name: "description",
-        content: "Hold the circuit. Deploy Pulse, Beam, Nova and Tesla against endless neon hostiles.",
+        content:
+          "Hold the circuit. Deploy Pulse, Beam, Nova and Tesla against endless neon hostiles.",
       },
     ],
     links: [
@@ -36,6 +38,9 @@ export const Route = createRootRoute({
         <AuthProvider>
           <Outlet />
         </AuthProvider>
+        {/* Vercel-only: the script it injects lives at /_vercel/..., which
+            404s on Poki/CrazyGames/itch.io where the portal build is hosted. */}
+        {!__PORTAL_BUILD__ && <SpeedInsights />}
         <Scripts />
       </body>
     </html>

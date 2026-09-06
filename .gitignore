@@ -6,3 +6,11 @@ node_modules/
 # Portal build output (npm run build:portal) — generated on demand, zipped
 # for upload to Poki/CrazyGames/itch.io. Not deployed anywhere from git.
 .output/
+neon-td-portal-build.zip
+
+# Vercel CLI directory. Holds `output/` (build artifacts from npm run build /
+# vite build — regenerated on every build and deploy; the initial scaffold
+# committed it, but a checked-in build goes stale against src/ immediately)
+# and, once `vercel link` is run, `project.json` with the project and org IDs,
+# which Vercel's own docs say to keep out of git.
+.vercel/

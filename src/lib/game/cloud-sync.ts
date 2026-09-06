@@ -58,8 +58,9 @@ export async function syncOnSignIn(local: PlayerProfile): Promise<PlayerProfile>
       return local;
     }
     const winner = betterProgress(local, cloud.data);
-    // Converge both sides to the winner so a later pull elsewhere agrees.
-    if (winner !== local || winner !== cloud.data) {
+    // Push only when local wins — cloud is behind and needs updating.
+    // When cloud wins we return its data (caller saves it locally), so no push needed.
+    if (winner !== cloud.data) {
       void pushCloudProfile({ data: winner }).catch(() => {});
     }
     return winner;
