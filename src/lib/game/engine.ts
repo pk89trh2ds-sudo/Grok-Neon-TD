@@ -1126,6 +1126,7 @@ export class GameEngine {
     audio.play("clear");
     this.renderer.addTrauma(0.2);
     this.beginWave();
+    useGame.getState().toast(`Wave ${this.wave}`, "Enemies incoming — game never pauses", "info");
     this.flushProfile();
     this.persistRun();
     this.syncHud();
