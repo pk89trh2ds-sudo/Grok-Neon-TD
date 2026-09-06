@@ -7,3 +7,8 @@ node_modules/
 # for upload to Poki/CrazyGames/itch.io. Not deployed anywhere from git.
 .output/
 neon-td-portal-build.zip
+
+# Vercel build output (npm run build / vite build) — regenerated on every
+# build and deploy. The initial scaffold committed it; a checked-in build
+# goes stale against src/ immediately, so it is untracked now.
+.vercel/output/
