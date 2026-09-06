@@ -1202,18 +1202,18 @@ function ToastStack({
     return () => window.clearTimeout(t);
   }, [toasts]);
   return (
-    <div className="pointer-events-none absolute right-3 top-3 z-20 flex w-64 flex-col gap-2 pt-[env(safe-area-inset-top)]">
+    <div className="pointer-events-none absolute right-1 top-1 z-20 flex w-44 flex-col gap-1 pt-[env(safe-area-inset-top)]">
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-auto flex items-start gap-2 rounded-md border border-line bg-panel px-3 py-2"
+          className="pointer-events-auto flex items-start gap-1.5 rounded px-2 py-1"
         >
           <div className="flex-1">
-            <div className="text-sm font-medium">{t.title}</div>
-            <div className="text-xs text-muted">{t.detail}</div>
+            <div className="text-xs font-medium">{t.title}</div>
+            <div className="text-[10px] text-muted">{t.detail}</div>
           </div>
           <button onClick={() => useGame.getState().dismissToast(t.id)} className="text-faint">
-            <X className="size-4" />
+            <X className="size-3" />
           </button>
         </div>
       ))}
