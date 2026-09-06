@@ -138,6 +138,21 @@ export class GameEngine {
   private raf = 0;
   private running = false;
   private persistAt = 0;
+  /** True while a commercial-break ad is in-flight; prevents concurrent breaks. */
+  private adBreakActive = false;
+  /**
+   * Session-level guard against double-granting the starter pack.
+   * The cloud-sync merge can restore a profile whose `consumedStarterPack` is
+   * false (the flag hadn't been pushed yet when the cloud copy was made);
+   * without this guard a subsequent `refreshEntitlements()` call would re-grant.
+   */
+  private starterPackGrantedThisSession = false;
+  /**
+   * Tracks which rewarded-ad placements are currently showing an ad.
+   * Prevents a double-tap from firing two concurrent rewarded-ad requests for
+   * the same placement (both would pass the pre-await eligibility check).
+   */
+  private adBonusInFlight = new Set<string>();
 
   private pendingNotes: Array<{ title: string; detail: string; tone: "ok" | "info" }> = [];
 
@@ -166,11 +181,24 @@ export class GameEngine {
       })();
       void this.refreshEntitlements();
     }
-    if (typeof window !== "undefined" && window.location.search.includes("purchase=success")) {
+    if (
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("purchase") === "success"
+    ) {
       // Stripe's webhook usually lands before this redirect completes, but
       // isn't guaranteed to — one retry after a short delay covers the gap.
       useGame.getState().toast("Purchase received", "Finalizing your purchase…", "ok");
-      window.history.replaceState(null, "", window.location.pathname);
+      // Strip only the `purchase` param; preserve other query params and the hash.
+      const params = new URLSearchParams(window.location.search);
+      params.delete("purchase");
+      const newSearch = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname +
+          (newSearch ? `?${newSearch}` : "") +
+          window.location.hash,
+      );
       setTimeout(() => void this.refreshEntitlements(), 2500);
     }
     this.track("session_start", {
@@ -716,7 +744,18 @@ export class GameEngine {
     try {
       const keys = await getEntitlements();
       this.entitlements = new Set(keys);
-      if (this.entitlements.has("starter_pack") && !this.profile.consumedStarterPack) {
+      if (
+        this.entitlements.has("starter_pack") &&
+        !this.profile.consumedStarterPack &&
+        !this.starterPackGrantedThisSession
+      ) {
+        // Set the session flag first (synchronously) so a concurrent call that
+        // passes the profile check while we're still in this continuation can't
+        // also enter this block.  The profile flag guards against cross-session
+        // regrant; the session flag guards against regrant after a cloud-sync
+        // merge replaces this.profile with a cloud copy that hasn't pushed the
+        // consumedStarterPack flag yet.
+        this.starterPackGrantedThisSession = true;
         this.profile.consumedStarterPack = true;
         this.profile.bankScrap += 500;
         this.profile.inventoryPulls += 2;
@@ -735,10 +774,23 @@ export class GameEngine {
 
   /** Interstitial ad break, skipped entirely for a "remove_ads" owner —
    *  rewarded placements (showRewardedAd) are player-initiated and stay on
-   *  regardless, since players choose those for a bonus. */
+   *  regardless, since players choose those for a bonus.
+   *
+   *  Only one commercial break runs at a time.  Without this guard, a wave
+   *  transition break (called from endWave while the next wave is already
+   *  running) and a game-over break (called from failRun moments later) can
+   *  overlap: the wave-transition break's trailing gameplayStart() would then
+   *  fire after failRun's gameplayStop(), incorrectly signalling the portal
+   *  that gameplay had resumed. */
   private maybeCommercialBreak() {
     if (this.entitlements.has("remove_ads")) return;
-    void getAdAdapter().commercialBreak();
+    if (this.adBreakActive) return;
+    this.adBreakActive = true;
+    void getAdAdapter()
+      .commercialBreak()
+      .finally(() => {
+        this.adBreakActive = false;
+      });
   }
 
   doPrestige() {
@@ -801,62 +853,90 @@ export class GameEngine {
 
   async claimCrateBonusAd() {
     const today = dayStamp();
-    if (this.profile.dailyCrateDay !== today || this.profile.dailyCrateAdBonusDay === today) {
+    if (
+      this.profile.dailyCrateDay !== today ||
+      this.profile.dailyCrateAdBonusDay === today ||
+      this.adBonusInFlight.has("crate_double")
+    ) {
       audio.play("deny");
       return;
     }
-    const result = await this.showAd("crate_double");
-    if (result !== "granted") return;
-    const r = claimDailyCrateAdBonus(this.profile);
-    if (!r) return;
-    audio.play("claim");
-    this.afterMeta(`Bonus: ${rewardLabel(r)}`);
-    this.track("ad_reward_granted", { placement: "crate_double" });
+    this.adBonusInFlight.add("crate_double");
+    try {
+      const result = await this.showAd("crate_double");
+      if (result !== "granted") return;
+      const r = claimDailyCrateAdBonus(this.profile);
+      if (!r) return;
+      audio.play("claim");
+      this.afterMeta(`Bonus: ${rewardLabel(r)}`);
+      this.track("ad_reward_granted", { placement: "crate_double" });
+    } finally {
+      this.adBonusInFlight.delete("crate_double");
+    }
   }
 
   async claimMissionBonusAd(id: string) {
+    const placementId = `mission_double:${id}`;
     const m = this.profile.missions.find((x) => x.id === id);
-    if (!m || !m.claimed || m.adBoosted) {
+    if (!m || !m.claimed || m.adBoosted || this.adBonusInFlight.has(placementId)) {
       audio.play("deny");
       return;
     }
-    const result = await this.showAd(`mission_double:${id}`);
-    if (result !== "granted") return;
-    const r = claimMissionAdBonus(this.profile, id);
-    if (!r) return;
-    audio.play("claim");
-    this.afterMeta(`Bonus: ${rewardLabel(r)}`);
-    this.track("ad_reward_granted", { placement: "mission_double" });
+    this.adBonusInFlight.add(placementId);
+    try {
+      const result = await this.showAd(placementId);
+      if (result !== "granted") return;
+      const r = claimMissionAdBonus(this.profile, id);
+      if (!r) return;
+      audio.play("claim");
+      this.afterMeta(`Bonus: ${rewardLabel(r)}`);
+      this.track("ad_reward_granted", { placement: "mission_double" });
+    } finally {
+      this.adBonusInFlight.delete(placementId);
+    }
   }
 
   async claimPassBonusAd() {
     const today = dayStamp();
-    if (this.profile.dailyPassAdBonusDay === today) {
+    if (this.profile.dailyPassAdBonusDay === today || this.adBonusInFlight.has("pass_xp_bonus")) {
       audio.play("deny");
       return;
     }
-    const result = await this.showAd("pass_xp_bonus");
-    if (result !== "granted") return;
-    const amount = claimPassAdBonus(this.profile);
-    if (amount == null) return;
-    audio.play("claim");
-    this.afterMeta(`+${amount} pass XP`);
-    this.track("ad_reward_granted", { placement: "pass_xp_bonus" });
+    this.adBonusInFlight.add("pass_xp_bonus");
+    try {
+      const result = await this.showAd("pass_xp_bonus");
+      if (result !== "granted") return;
+      const amount = claimPassAdBonus(this.profile);
+      if (amount == null) return;
+      audio.play("claim");
+      this.afterMeta(`+${amount} pass XP`);
+      this.track("ad_reward_granted", { placement: "pass_xp_bonus" });
+    } finally {
+      this.adBonusInFlight.delete("pass_xp_bonus");
+    }
   }
 
   async claimShopBonusAd() {
     const today = dayStamp();
-    if (this.profile.dailyShopAdBonusDay === today) {
+    if (
+      this.profile.dailyShopAdBonusDay === today ||
+      this.adBonusInFlight.has("shop_free_item")
+    ) {
       audio.play("deny");
       return;
     }
-    const result = await this.showAd("shop_free_item");
-    if (result !== "granted") return;
-    const item = claimShopAdBonus(this.profile);
-    if (!item) return;
-    audio.play("claim");
-    this.afterMeta(`Free: ${item.title}`);
-    this.track("ad_reward_granted", { placement: "shop_free_item" });
+    this.adBonusInFlight.add("shop_free_item");
+    try {
+      const result = await this.showAd("shop_free_item");
+      if (result !== "granted") return;
+      const item = claimShopAdBonus(this.profile);
+      if (!item) return;
+      audio.play("claim");
+      this.afterMeta(`Free: ${item.title}`);
+      this.track("ad_reward_granted", { placement: "shop_free_item" });
+    } finally {
+      this.adBonusInFlight.delete("shop_free_item");
+    }
   }
 
   private async showAd(placementId: string): Promise<AdResult> {
