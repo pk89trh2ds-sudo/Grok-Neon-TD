@@ -255,9 +255,7 @@ function stripeWebhookPlugin(): Plugin {
           const rawBody = Buffer.concat(chunks).toString("utf8");
           const signature = req.headers["stripe-signature"];
 
-          const mod = (await server.ssrLoadModule(
-            "/src/lib/game/stripe-webhook.server.ts",
-          )) as {
+          const mod = (await server.ssrLoadModule("/src/lib/game/stripe-webhook.server.ts")) as {
             handleStripeWebhook: (body: string, sig: string | undefined) => Promise<Response>;
           };
           const response = await mod.handleStripeWebhook(
@@ -301,6 +299,9 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  // Lets client code strip Vercel-platform-only features from the portal
+  // bundle — see `src/env.d.ts`.
+  define: { __PORTAL_BUILD__: JSON.stringify(isPortalBuild) },
   plugins: [
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
